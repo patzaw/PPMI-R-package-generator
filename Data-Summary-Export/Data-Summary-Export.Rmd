@@ -1,0 +1,397 @@
+---
+title: "PPMI: Data summary and export"
+author: "Patrice Godard"
+date: "`r format(Sys.time(), '%B %d %Y')`"
+abstract: "This document describes the data provided in the PPMI package and how they are exported"
+output: 
+  BiocStyle::html_document: 
+    fig_width: 9
+    fig_height: 6.5
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, echo=FALSE, message=FALSE}
+rm(list=ls())
+null <- gc()
+try(null <- dev.off(), silent=T)
+rm(null)
+library(openxlsx)
+library(knitr)
+library(RColorBrewer)
+library(PPMI)
+dumpDate <- as.Date(packageDescription("PPMI")$Date)
+xf <- paste0("PPMI-Export-", dumpDate, ".xlsx")
+#######
+beeswarm <- function(
+    formula,
+    data,
+    corral="density",
+    corralWidth=0.8,
+    do.plot=TRUE,
+    ...
+){
+    if(corral!="density"){
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F,
+                corral=corral,
+                corralWidth=corralWidth
+            ),
+            list(...)
+        ))
+    }else{
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F
+            ),
+            list(...)
+        ))
+        toRet <- do.call(rbind, by(
+            toRet,
+            toRet$x.orig,
+            function(d){
+                cpos <- round(mean(d$x, na.rm=T))
+                xos <- d$x - cpos
+                div <- max(abs(xos), na.rm=T)/(corralWidth/2)
+                d$x <- cpos + (xos/div)
+                return(d)
+            }
+        ))
+    }
+    if(do.plot){
+        points(
+            toRet$x, toRet$y,
+            pch=toRet$pch,
+            col=toRet$col, bg=toRet$bg
+        )
+    }
+    invisible(toRet)
+}
+#######
+rebox <- function(bp, boxwex=0.8, ...){
+    sp <- boxwex/2
+    for(i in 1:ncol(bp$stats)){
+        y <- bp$stats[2:4, i]
+        segments(
+            x0=rep(i-sp, length(y)),
+            x1=rep(i+sp, length(y)),
+            y0=y,
+            y1=y,
+            ...
+        )
+    }
+}
+```
+
+
+# Introduction
+
+## Background
+
+In the field of Parkinson’s disease (PD) therapeutics, the ultimate goal is to
+develop disease-modifying treatments that slow, prevent or reverse the
+underlying disease process. Validated biomarkers of disease progression would
+dramatically accelerate PD therapeutics research.
+Current progression biomarkers, however, are not optimal and are not
+fully validated.
+(source: [PPMI website](http://www.ppmi-info.org/about-ppmi/))
+
+## Rationale for PPMI
+
+PPMI (Parkinson's Progression Markers Initiative)
+is an observational clinical study to verify progression markers in
+Parkinson’s disease. PPMI has emerged as a model for following multiple
+cohorts of significant interest and is being conducted at a network of
+clinical sites around the world. The study is designed to establish a
+comprehensive set of clinical, imaging and biosample data that will be used
+to define biomarkers of PD progression.
+Once these biomarkers are defined, they can be used in therapeutic studies,
+which is the ultimate goal.
+(source: [PPMI website](http://www.ppmi-info.org/about-ppmi/))
+
+PPMI will follow standardized data acquisition protocols to ensure that
+tests and assessments conducted at multiple sites and across multiple cohorts
+can be pooled in centralized databases and repositories.
+The clinical, imaging and biologic data will be easily accessible
+to researchers in real time through
+the [PPMI website](http://www.ppmi-info.org/about-ppmi/).
+The biological samples collected throughout the course of PPMI will
+be stored in a central repository that will be accessible to any scientist
+with promising biomarker leads for the purposes of verifying initial
+results and assessing correlations to clinical outcomes and other biomarkers.
+(source: [PPMI website](http://www.ppmi-info.org/about-ppmi/))
+
+## Data source
+
+Data were dumped on
+`r format(dumpDate, "%A %B %d %Y")` from the
+[PPMI repository](https://www.ppmi-info.org/access-data-specimens/download-data/). They
+were then preprocessed and integrated and derived variables were computed as
+recommended by the PPMI.
+
+In this document we describe the data which were preprocessed and how they
+were exported in the [`r xf`](`r xf`) file.
+
+# Patient cohorts
+
+The PPMI is focused on
+`r length(setdiff(unique(patientData$ENROLL_CAT), NA))` patient cohorts:
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- unique(patientData[,c("ENROLL_CAT", "APPRDX")])
+toplot <- toplot[which(!is.na(toplot$ENROLL_CAT)),]
+toAdd <- table(patientData[,c("ENROLL_CAT", "ENROLL_STATUS")])
+class(toAdd) <- "matrix"
+toAdd <- data.frame(toAdd[,c("Enrolled", "Withdrew")])
+toplot <- merge(toplot, toAdd, by.x="ENROLL_CAT", by.y=0)
+colnames(toplot) <- c(
+    "Enrollment Category", "Appropriate Diagnosis",
+    "Enrolled and not withdrew", "Enrolled and withdrew"
+)
+kable(toplot, row.names=F)
+```
+
+These cohorts are described in this
+[PPMI webpage](http://www.ppmi-info.org/study-design/study-cohorts/).
+
+# Variable documentation
+
+## Groups of variables
+
+Variables have been classified in groups and sub-groups. In total, there are
+`r nrow(varDoc)` variables belonging to
+`r nrow(unique(varDoc[,c("Group", "Sub-group")]))` sub-groups in
+`r length(unique(varDoc$Group))` groups.
+This information is summarized in the table below.
+
+```{r, echo=FALSE, message=FALSE}
+kable(variableGroupSummary(), row.names=F)
+```
+
+## Classes and source of variables
+
+Variables can be of different classes as shown in the following table.
+*Character* variables correspond to comments precising patient status or
+treatment.
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- as.data.frame(table(varDoc$Class))
+colnames(toplot) <- c("Class", "Number of variables")
+kable(toplot, row.names=F)
+```
+
+Variables have been either directly extracted from files provided by
+the PPMI or derived according to PPMI recommendations:
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- as.data.frame(table(varDoc$Source))
+colnames(toplot) <- c("Source", "Number of variables")
+kable(toplot, row.names=F)
+```
+
+## Export
+
+```{r, echo=FALSE, message=FALSE}
+xs.varDoc <- "Variable-Documentation"
+```
+
+Documentation of variables have been exported in the *`r xs.varDoc`*
+spreadsheet of the [`r xf`](`r xf`) file.
+
+# Patient variables
+
+```{r, echo=FALSE, message=FALSE}
+xs.patientData <- "Patient-Data"
+```
+
+Among all availables variables, `r ncol(patientData)` were assessed only once,
+during the recruitment. They belong to the group of variable named *Patient*.
+These variables have been exported in the *`r xs.patientData`*
+spreadsheet of the [`r xf`](`r xf`) file.
+
+```{r, echo=FALSE, message=FALSE}
+varDocExport.p <- data.frame(
+    Variable=colnames(patientData),
+    varDoc[colnames(patientData),],
+    stringsAsFactors=F,
+    check.names=F
+)
+for(cohort in names(listCohorts())){
+    patno <- getCohort(cohort)
+    subPat <- patientData[patno, ]
+    varDocExport.p[,cohort] <- apply(
+        subPat,
+        2,
+        function(x) sum(!is.na(x))
+    )
+}
+```
+
+Numbers of available data for each cohort have been exported in
+the *`r xs.varDoc`* spreadsheet of the [`r xf`](`r xf`) file.
+
+# Follow-up variables
+
+## Visits
+
+Patients condition is assessed during different visits. The possible visits are
+described in the table below.
+
+```{r, echo=FALSE, message=FALSE}
+kable(visitDoc, row.names=F)
+```
+
+Among these visits, some are scheduled from the begining of the study. The
+table below shows the number of patients which were followed-up at each visit
+when the data were downloaded (`r dumpDate`).
+
+```{r, echo=FALSE, message=FALSE}
+actualVisits <- intersect(scheduledVisits$Visit, visitInfo$EVENT_ID)
+toplot <- merge(
+    visitInfo,
+    patientData[, "ENROLL_CAT", drop=F],
+    by.x="PATNO", by.y=0
+)
+toplot <- table(toplot[,c("EVENT_ID", "ENROLL_CAT")])
+class(toplot) <- "matrix"
+toplot <- data.frame(toplot[actualVisits,])
+toplot <- cbind(scheduledVisits[actualVisits,], toplot)
+kable(toplot, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+xs.visitInfo <- "Visit-Date"
+```
+
+The dates of the different visits for each patient have been exported in
+the *`r xs.visitInfo`* spreadsheet of the [`r xf`](`r xf`) file.
+The graphics below
+shows an overview of the scheduled visit date for all the PPMI patients
+which are currently enrolled.
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- visitInfo[which(visitInfo$EVENT_ID %in% rownames(scheduledVisits)),]
+toplot <- merge(
+    toplot,
+    patientData[,"ENROLL_CAT", drop=F],
+    by.x="PATNO", by.y=0
+)
+toplot <- toplot[which(!is.na(toplot$ENROLL_CAT)),]
+bp <- boxplot(
+    INFODT~EVENT_ID, data=toplot,
+    col="grey", outline=FALSE,
+    ylim=range(toplot$INFODT, na.rm=T),
+    ylab="Date",
+    main="Visit date"
+)
+coln <- sort(as.character(unique(toplot$ENROLL_CAT)))
+colLeg <- brewer.pal(n=length(coln), name="Set3")
+colLeg <- paste0(colLeg, "AA")
+names(colLeg) <- coln
+beeswarm(
+    formula=INFODT~EVENT_ID, data=toplot,
+    add=TRUE,
+    pwbg=colLeg[toplot$ENROLL_CAT],
+    col="#00000080",
+    pch=21,
+    corral="density",
+    corralWidth=0.7,
+    priority="random"
+)
+rebox(bp, col="black", lwd=c(1.5,3,1.5))
+legend(
+    "bottomright",
+    names(colLeg),
+    pch=21,
+    col="#00000080",
+    pt.bg=colLeg,
+    ncol=2,
+    bg="transparent"
+)
+```
+
+## Variables
+
+```{r, echo=FALSE, message=FALSE}
+xs.visitData <- "Visit-Data"
+```
+
+Among all availables variables,  `r ncol(visitData)` were assessed
+at different visit depending on the variable.
+These variables have been exported in the *`r xs.visitData`*
+spreadsheet of the [`r xf`](`r xf`) file.
+
+```{r, echo=FALSE, message=FALSE}
+varDocExport.e <- data.frame(
+    Variable=colnames(visitData),
+    varDoc[colnames(visitData),],
+    stringsAsFactors=F,
+    check.names=F
+)
+for(cohort in names(listCohorts())){
+    patno <- getCohort(cohort)
+    for(v in scheduledVisits$Visit){
+        visCoh <- paste(cohort, v, sep=" - ")
+        ids <- paste(patno, v, sep=".")
+        subVis <- visitData[ids,]
+        varDocExport.e[, visCoh] <- apply(
+            subVis,
+            2,
+            function(x) sum(!is.na(x))
+        )
+    }
+}
+```
+
+Numbers of available data for each cohort and each visit have been exported in
+the *`r xs.varDoc`* spreadsheet of the [`r xf`](`r xf`) file.
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+```{r, echo=FALSE, message=FALSE}
+## Final xlsx export
+varDocExport <- merge(varDocExport.p, varDocExport.e, all=T)
+varDocExport <- varDocExport[
+    order(paste(varDocExport$Group, varDocExport$`Sub-group`, sep="-->")),
+]
+wb <- createWorkbook()
+##
+addWorksheet(wb, xs.varDoc)
+writeDataTable(
+    wb, xs.varDoc, varDocExport, rowNames=FALSE, colNames=TRUE,
+    startRow=1, startCol=1, tableStyle = "TableStyleLight9"
+)
+setColWidths(wb, xs.varDoc, cols = 1:(ncol(varDocExport)+1), widths = "auto")
+##
+addWorksheet(wb, xs.patientData)
+writeDataTable(
+    wb, xs.patientData, patientData, rowNames=TRUE, colNames=TRUE,
+    startRow=1, startCol=1, tableStyle = "TableStyleLight9"
+)
+setColWidths(wb, xs.patientData, cols = 1:(ncol(patientData)+1), widths = "auto")
+##
+addWorksheet(wb, xs.visitInfo)
+writeDataTable(
+    wb, xs.visitInfo, visitInfo, rowNames=TRUE, colNames=TRUE,
+    startRow=1, startCol=1, tableStyle = "TableStyleLight9"
+)
+setColWidths(wb, xs.visitInfo, cols = 1:(ncol(visitInfo)+1), widths = "auto")
+##
+addWorksheet(wb, xs.visitData)
+writeDataTable(
+    wb, xs.visitData, visitData, rowNames=TRUE, colNames=TRUE,
+    startRow=1, startCol=1, tableStyle = "TableStyleLight9"
+)
+setColWidths(wb, xs.visitData, cols = 1:(ncol(visitData)+1), widths = "auto")
+##
+saveWorkbook(wb, xf, TRUE)
+```
+
+

@@ -1,0 +1,500 @@
+---
+title: "PPMI: data usage"
+author: "Patrice Godard"
+date: "`r format(Sys.time(), '%B %d %Y')`"
+package: "PPMI (version `r packageVersion('PPMI')`)"
+abstract: "This document shows how to use the PPMI R package to use data from the Parkinson's Progression Markers Initiative (PPMI)."
+vignette: >
+    %\VignetteIndexEntry{PPMI data usage}
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteEncoding{UTF-8}
+output:
+    BiocStyle::html_document:
+        toc: true
+---
+
+```{r}
+library(PPMI)
+```
+
+
+```{r, echo=FALSE, message=FALSE}
+null <- gc()
+try(null <- dev.off(), silent=T)
+rm(null)
+library(knitr)
+library(RColorBrewer)
+dumpDate <- as.Date(packageDescription("PPMI")$Date)
+#######
+beeswarm <- function(
+    formula,
+    data,
+    corral="density",
+    corralWidth=0.8,
+    do.plot=TRUE,
+    ...
+){
+    if(corral!="density"){
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F,
+                corral=corral,
+                corralWidth=corralWidth
+            ),
+            list(...)
+        ))
+    }else{
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F
+            ),
+            list(...)
+        ))
+        toRet <- do.call(rbind, by(
+            toRet,
+            toRet$x.orig,
+            function(d){
+                cpos <- round(mean(d$x, na.rm=T))
+                xos <- d$x - cpos
+                div <- max(abs(xos), na.rm=T)/(corralWidth/2)
+                d$x <- cpos + (xos/div)
+                return(d)
+            }
+        ))
+    }
+    if(do.plot){
+        points(
+            toRet$x, toRet$y,
+            pch=toRet$pch,
+            col=toRet$col, bg=toRet$bg
+        )
+    }
+    invisible(toRet)
+}
+#######
+rebox <- function(bp, boxwex=0.8, ...){
+    sp <- boxwex/2
+    for(i in 1:ncol(bp$stats)){
+        y <- bp$stats[2:4, i]
+        segments(
+            x0=rep(i-sp, length(y)),
+            x1=rep(i+sp, length(y)),
+            y0=y,
+            y1=y,
+            ...
+        )
+    }
+}
+```
+
+# Introduction
+
+## Background
+
+In the field of Parkinson’s disease (PD) therapeutics, the ultimate goal is to
+develop disease-modifying treatments that slow, prevent or reverse the
+underlying disease process. Validated biomarkers of disease progression would
+dramatically accelerate PD therapeutics research.
+Current progression biomarkers, however, are not optimal and are not
+fully validated.
+(source: [PPMI website](http://www.ppmi-info.org/about-ppmi/))
+
+## Rationale for PPMI
+
+PPMI (Parkinson's Progression Markers Initiative)
+is an observational clinical study to verify progression markers in
+Parkinson’s disease. PPMI has emerged as a model for following multiple
+cohorts of significant interest and is being conducted at a network of
+clinical sites around the world. The study is designed to establish a
+comprehensive set of clinical, imaging and biosample data that will be used
+to define biomarkers of PD progression.
+Once these biomarkers are defined, they can be used in therapeutic studies,
+which is the ultimate goal.
+(source: [PPMI website](http://www.ppmi-info.org/about-ppmi/))
+
+PPMI will follow standardized data acquisition protocols to ensure that
+tests and assessments conducted at multiple sites and across multiple cohorts
+can be pooled in centralized databases and repositories.
+The clinical, imaging and biologic data will be easily accessible
+to researchers in real time through
+the [PPMI website](http://www.ppmi-info.org/about-ppmi/).
+The biological samples collected throughout the course of PPMI will
+be stored in a central repository that will be accessible to any scientist
+with promising biomarker leads for the purposes of verifying initial
+results and assessing correlations to clinical outcomes and other biomarkers.
+(source: [PPMI website](http://www.ppmi-info.org/about-ppmi/))
+
+## Data source
+
+Data were dumped on
+`r format(dumpDate, "%A %B %d %Y")` from the
+[PPMI repository](https://www.ppmi-info.org/access-data-specimens/download-data/). They
+were then preprocessed and integrated and derived variables were computed as
+recommended by the PPMI.
+
+This document shows how to use the PPMI R package to use data
+from the Parkinson's Progression Markers Initiative (PPMI).
+
+# Patient cohorts
+
+The PPMI is focused on
+`r length(setdiff(unique(patientData$ENROLL_CAT), NA))` patient cohorts
+which can be retrieved using the `listCohorts` function:
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- listCohorts()
+kable(toplot, row.names=F)
+```
+
+These cohorts are described in this
+[PPMI webpage](http://www.ppmi-info.org/study-design/study-cohorts/).
+
+# Variable documentation
+
+## Groups of variables
+
+Variables have been classified in groups and sub-groups. In total, there are
+`r nrow(varDoc)` variables belonging to
+`r nrow(unique(varDoc[,c("Group", "Sub-group")]))` sub-groups in
+`r length(unique(varDoc$Group))` groups.
+This information is summarized by the `variableGroupSummary` function.
+
+```{r, echo=FALSE, message=FALSE}
+kable(variableGroupSummary(), row.names=F)
+```
+
+## Classes and source of variables
+
+Variables can be of different classes as shown in the following table.
+*Character* variables correspond to comments precising patient status or
+treatment.
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- as.data.frame(table(varDoc$Class))
+colnames(toplot) <- c("Class", "Number of variables")
+kable(toplot, row.names=F)
+```
+
+Variables have been either directly extracted from files provided by
+the PPMI or derived according to PPMI recommendations:
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- as.data.frame(table(varDoc$Source))
+colnames(toplot) <- c("Source", "Number of variables")
+kable(toplot, row.names=F)
+```
+
+## Finding variables
+
+Documentation of variables is available in the `varDoc` object.
+
+```{r}
+head(varDoc)
+```
+
+Variables corresponding to groups or sub-groups can be found with the
+`findVarByGroup` function.
+
+```{r}
+findVarByGroup("Plasma")
+```
+
+Variables can also be search directly according to their names or description:
+
+```{r}
+findVariable("enrollment")
+```
+
+# Patient variables
+
+Among all availables variables, `r ncol(patientData)` were assessed only once,
+during the recruitment. They belong to the group of variable named *Patient*.
+These data are available in the `patientData` object.
+
+```{r}
+dim(patientData)
+patientData[1:5,1:5]
+```
+
+# Follow-up variables
+
+## Visits
+
+Patients condition is assessed during different visits. The possible visits are
+described in the `visitDoc` table.
+
+```{r, echo=FALSE, message=FALSE}
+kable(visitDoc, row.names=F)
+```
+
+Among these visits, some are scheduled from the begining of the study.
+The list of these visits is available in the `scheduledVisits` table.
+The table below shows the number of patients which were followed-up at each
+visit when the data were downloaded (`r dumpDate`).
+
+```{r, echo=FALSE, message=FALSE}
+actualVisits <- intersect(scheduledVisits$Visit, visitInfo$EVENT_ID)
+toplot <- merge(
+    visitInfo,
+    patientData[, "ENROLL_CAT", drop=F],
+    by.x="PATNO", by.y=0
+)
+toplot <- table(toplot[,c("EVENT_ID", "ENROLL_CAT")])
+class(toplot) <- "matrix"
+toplot <- data.frame(toplot[actualVisits,])
+toplot <- cbind(scheduledVisits[actualVisits,], toplot)
+kable(toplot, row.names=F)
+```
+
+The dates of the different visits for each patient are available in
+the `visitInfo` object.
+The graphics below
+shows an overview of the scheduled visit date for all the PPMI patients
+which are currently enrolled.
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- visitInfo[which(visitInfo$EVENT_ID %in% rownames(scheduledVisits)),]
+toplot <- merge(
+    toplot,
+    patientData[,"ENROLL_CAT", drop=F],
+    by.x="PATNO", by.y=0
+)
+toplot <- toplot[which(!is.na(toplot$ENROLL_CAT)),]
+bp <- boxplot(
+    INFODT~EVENT_ID, data=toplot,
+    col="grey", outline=FALSE,
+    ylim=range(toplot$INFODT, na.rm=T),
+    ylab="Date",
+    main="Visit date"
+)
+coln <- sort(as.character(unique(toplot$ENROLL_CAT)))
+colLeg <- brewer.pal(n=length(coln), name="Set3")
+colLeg <- paste0(colLeg, "AA")
+names(colLeg) <- coln
+beeswarm(
+    formula=INFODT~EVENT_ID, data=toplot,
+    add=TRUE,
+    pwbg=colLeg[toplot$ENROLL_CAT],
+    col="#00000080",
+    pch=21,
+    corral="density",
+    corralWidth=0.7,
+    priority="random"
+)
+rebox(bp, col="black", lwd=c(1.5,3,1.5))
+legend(
+    "bottomright",
+    names(colLeg),
+    pch=21,
+    col="#00000080",
+    pt.bg=colLeg,
+    ncol=2,
+    bg="transparent"
+)
+```
+
+## Variables
+
+Among all availables variables,  `r ncol(visitData)` were assessed
+at different visit depending on the variable.
+These data are available in the `visitData` object.
+
+```{r}
+dim(visitData)
+visitData[1:5, 1:5]
+```
+
+# SNP data
+
+Genotyping of several patients has been done using
+Immunochips and NeuroX chips. Data preprocessing is described in
+*PPMI\_Methods\_Immunochip\_Genotyping\_108\_121613.pdf* and
+*PPMI\_Methods\_NeuroX\_Genotyping\_107\_121613.pdf*
+available on the PPMI website. 
+
+These data are available in the `snpData` object.
+Basic information about SNPs is available in the `snpInfo` object.
+
+```{r}
+print(snpData)
+as(snpData[1:5, 1:5], "character")
+head(snpInfo)
+```
+
+# Preparing data for analysis
+
+## Get cohorts
+
+The function `getCohort` is used to get PATNO (patient IDs) of a cohort of
+interest. The function `listCohorts` can be used to get all the available
+cohort. Cohorts are defined according to subject enrollment. However among
+enrolled subjects some have been withdrawn in the course of the study. These
+subjects can be excluded using the `enrolledOnly` parameter.
+
+```{r}
+listCohorts()
+pd <- getCohort(cohort="PD", enrolledOnly=TRUE)
+head(pd)
+```
+
+## Extract variables
+
+Variables are extracted for a list of subjects using the `extractVariables`
+function.
+
+### Patient variables
+
+```{r}
+head(findVarByGroup("Patient"))
+pd.d <- extractVariables(
+    patients=pd,
+    variables=c(
+        "ENROLL_CAT", "SimpleGender", "ENROLL_AGE"
+    )
+)
+head(pd.d)
+```
+
+### Visit variables
+
+For visit variables the ID of the visit under focus must be provided using
+the `event` parameter:
+
+```{r}
+head(scheduledVisits)
+pd.d <- extractVariables(
+    patients=pd,
+    variables=c(
+        "ENROLL_CAT", "SimpleGender", "ENROLL_AGE",
+        "UPDRS1", "UPDRS2", "UPDRS3", "UPDRS"
+    ),
+    events="BL"
+)
+head(pd.d)
+```
+
+If several visits are requested the function returns a list of data.frames.
+One for all the patients variables and one for each visit variable:
+
+```{r}
+pd.d <- extractVariables(
+    patients=pd,
+    variables=c(
+        "ENROLL_CAT", "SimpleGender", "ENROLL_AGE",
+        "UPDRS1", "UPDRS2", "UPDRS3", "UPDRS"
+    ),
+    events=c("BL", "V04", "V06")
+)
+lapply(pd.d, head)
+```
+
+This list can be easily stacked in one data.frame by using the following
+command:
+
+```{r}
+stacked <- do.call(cbind, pd.d)
+head(stacked)
+```
+
+### SNPs
+
+For SNP data, the ID of the SNPs to be extracted should be
+provided using the snps argument.
+
+```{r}
+snps <- c("rs356165", "rs3822086", "rs3775424", "rs3857059", "rs2736990")
+pd.d <- extractVariables(
+    patients=pd,
+    variables=c(
+        "ENROLL_CAT", "SimpleGender", "ENROLL_AGE",
+        "UPDRS1", "UPDRS2", "UPDRS3", "UPDRS"
+    ),
+    snps=c("rs356165", "rs3822086", "rs3775424", "rs3857059", "rs2736990"),
+    transcode=T,
+    events=c("BL", "V04", "V06")
+)
+head(pd.d$Patient)
+```
+
+The collected data are bound to the Patient data.frame of the
+results.
+
+Information about SNP can be retrieved using the `getSnpInfo`
+function.
+
+```{r}
+getSnpInfo(snps)
+attr(getSnpInfo(snps), "Not found")
+```
+
+# Analyses
+
+## SNP analyses with plink
+
+The function `plinkRegression` calls
+[plink](http://pngu.mgh.harvard.edu/~purcell/plink/)
+to run logistic or
+linear regression analysis. In the example below, PD are compared
+to HC. Look at `?plinkRegression` to get further information.
+
+```{r}
+patients <- c(getCohort("PD"), getCohort("HC"))
+phenoTable <- extractVariables(
+    patients=patients,
+    variables=c("ENROLL_CAT", "ENROLL_AGE", "SimpleGender")
+)
+phenoTable$ENROLL_CAT <- factor(phenoTable$ENROLL_CAT)
+snpSets <- list(
+    SNCA=c(
+        "rs356165", "NeuroX_rs356165",
+        "NeuroX_rs34674090", "NeuroX_rs17180453", 
+        "NeuroX_rs35541731", "NeuroX_chr4:90661018",
+        "rs3822086", "rs3775424", 
+        "rs3857057", "rs36119871", "rs4088093",
+        "rs189596", "rs4088094", 
+        "NeuroX_rs4088094", "NeuroX_rs28393675",
+        "rs3857059", "NeuroX_rs28613708", 
+        "NeuroX_rs77490515", "rs2736990",
+        "exm-rs2736990", "NeuroX_dbSNP_rs112645122", 
+        "NeuroX_rs356198", "NeuroX_rs3910105",
+        "NeuroX_rs356197", "NeuroX_rs356196", 
+        "NeuroX_rs3910104", "NeuroX_rs10433953", "NeuroX_rs72503734", 
+        "NeuroX_chr4:90700236", "NeuroX_rs2572319", "NeuroX_rs10018362", 
+        "NeuroX_rs10002435", "NeuroX_rs11097234", "NeuroX_chr4:90715805", 
+        "NeuroX_rs6848726", "NeuroX_rs2119787", "NeuroX_rs78679014", 
+        "NeuroX_rs35479630", "NeuroX_rs2619343", "NeuroX_rs2737017", 
+        "NeuroX_rs2737016", "NeuroX_rs2737014",
+        "NeuroX_rs7356297", "NeuroX_rs11097238", 
+        "NeuroX_rs3796665", "NeuroX_rs2619357", "NeuroX_rs55932807", 
+        "NeuroX_rs79392886", "NeuroX_dbSNP_rs113177203", "exm2241445_ver2",
+        "NeuroX_rs3756059", "NeuroX_rs1372518",
+        "NeuroX_rs1372519", "rs2245801"
+    ),
+    GIGYF2=c(
+        "exm275808", "exm275809", "exm2237279", "exm275848", "exm275849", 
+        "exm275851", "exm275853", "exm275883", "exm275892", "exm275897", 
+        "exm275901", "exm275904", "exm275916", "exm2255118", "exm275944", 
+        "exm275946", "exm275953", "exm275961", "exm275964", "exm2007520", 
+        "exm275978", "exm275979", "exm275983", "exm276001"
+    )
+)
+results <- plinkRegression(
+    phenoTable=phenoTable,
+    snpSets=snpSets,
+    mperm=100,
+    type="logistic",
+    command="~/bin/plink --noweb"
+)
+print(head(results$snps[order(results$snps$P),]))
+print(results$sets)
+```
+
+# Session info
+
+```{r, echo=FALSE}
+sessionInfo()
+```

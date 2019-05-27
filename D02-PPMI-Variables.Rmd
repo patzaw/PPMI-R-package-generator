@@ -1,0 +1,1941 @@
+---
+title: "PPMI variables"
+author: "Patrice Godard"
+date: "`r format(Sys.time(), '%B %d %Y')`"
+abstract: "This document describes how PPMI variables were derived from the original parsed data."
+output: 
+  BiocStyle::html_document: 
+    fig_width: 9
+    fig_height: 6.5
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+rm(list=ls())
+null <- gc()
+try(null <- dev.off(), silent=T)
+rm(null)
+library(knitr)
+library(beeswarm)
+library(RColorBrewer)
+load("PPMI-Parsed.rda")
+varDoc$Source <- "Provided"
+#######
+beeswarm <- function(
+    formula,
+    data,
+    corral="density",
+    corralWidth=0.8,
+    do.plot=TRUE,
+    ...
+){
+    if(corral!="density"){
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F,
+                corral=corral,
+                corralWidth=corralWidth
+            ),
+            list(...)
+        ))
+    }else{
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F
+            ),
+            list(...)
+        ))
+        toRet <- do.call(rbind, by(
+            toRet,
+            toRet$x.orig,
+            function(d){
+                cpos <- round(mean(d$x, na.rm=T))
+                xos <- d$x - cpos
+                div <- max(abs(xos), na.rm=T)/(corralWidth/2)
+                d$x <- cpos + (xos/div)
+                return(d)
+            }
+        ))
+    }
+    if(do.plot){
+        points(
+            toRet$x, toRet$y,
+            pch=toRet$pch,
+            col=toRet$col, bg=toRet$bg
+        )
+    }
+    invisible(toRet)
+}
+#######
+rebox <- function(bp, boxwex=0.8, ...){
+    sp <- boxwex/2
+    for(i in 1:ncol(bp$stats)){
+        y <- bp$stats[2:4, i]
+        segments(
+            x0=rep(i-sp, length(y)),
+            x1=rep(i+sp, length(y)),
+            y0=y,
+            y1=y,
+            ...
+        )
+    }
+}
+#######
+mdSan <- function(txt){
+    toRet <- txt
+    toRet <- gsub('[_]', '\\\\_', toRet)
+    return(toRet)
+}
+#######
+vPatient <- function(d){
+    sub("[.].*$", "", rownames(d))
+}
+vEvent <- function(d){
+    sub("^.*[.]", "", rownames(d))
+}
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Introduction
+
+This document describes how PPMI variables were derived from the
+original parsed data.
+
+Derived variables were computed as described in the
+<!-- *PPMI\_Derived\_Variable\_Definitions\_and\_Score\_Calculations20151201.pdf* --> <!-- For 2016-01-11 and before -->
+*Derived\_Variable\_Definitions\_and\_Score\_Calculations.csv*
+file.
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Demographics data
+
+## Simple gender
+
+The original provided gender
+(`r paste(sort(unique(patientData$GENDER)), collapse=", ")`) were simplified to
+*Female* or *Male* values.
+
+```{r, echo=FALSE, message=FALSE}
+patientData[,"SimpleGender"] <- as.factor(ifelse(
+  patientData$GENDER=="Male",
+  "Male",
+  "Female"
+))
+parDocToAdd <- data.frame(
+    Variable="SimpleGender",
+    Description="Simplified gender: Male or Female",
+    Group="Patient",
+    "Sub-group"="Demographic",
+    Class=class(patientData$SimpleGender),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+   )
+rownames(parDocToAdd) <- "SimpleGender"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Age
+
+```{r, echo=FALSE, message=FALSE}
+patientData[,"ENROLL_AGE"] <- as.double(
+    patientData$ENROLL_DATE - patientData$BIRTHDT, units="days"
+)/365.25
+parDocToAdd <- data.frame(
+    Variable="ENROLL_AGE",
+    Description="Age at enrollment",
+    Group="Patient",
+    "Sub-group"="Demographic",
+    Class=class(patientData$ENROLL_AGE),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- "ENROLL_AGE"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Origin population
+
+```{r, echo=FALSE, message=FALSE}
+cnToTake <- c("RAINDALS", "RAASIAN", "RABLACK", "RAHAWOPI", "RAWHITE", "RANOS")
+patientData$Origin <- as.factor(apply(
+   patientData[, cnToTake],
+   1,
+   function(x){
+      toRet <- cnToTake[which(x=="Yes")]
+      if(length(toRet)!=1){
+         return("other")
+      }
+      if(toRet %in% c("RAINDALS", "RAHAWOPI", "RANOS")){
+         return("other")
+      }
+      return(toRet)
+   }
+))
+parDocToAdd <- data.frame(
+    Variable="Origin",
+    Description="Origin population",
+    Group="Patient",
+    "Sub-group"="Demographic",
+    Class=class(patientData$Origin),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- "Origin"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# PD history
+
+## Family
+
+```{r, echo=FALSE, message=FALSE}
+cnToTake <- c(
+   "BIOMOMPD", "BIODADPD", "FULSIBPD",
+   "HAFSIBPD", "MAGPARPD", "PAGPARPD",
+   "MATAUPD", "PATAUPD", "KIDSPD"
+)
+patientData$PDHist <- apply(
+   patientData[, cnToTake],
+   1,
+   function(x){
+      any(x>0)
+   }
+)
+parDocToAdd <- data.frame(
+    Variable="PDHist",
+    Description="PD Family History",
+    Group="Patient",
+    "Sub-group"="PD history",
+    Class=class(patientData$PDHist),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- "PDHist"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Disease duration
+
+```{r, echo=FALSE, message=FALSE}
+dxdt <- merge(
+    visitInfo,
+    visitData[,"PDDXDT", drop=F],
+    by=0
+)
+dxdt <- unique(dxdt[which(!is.na(dxdt$PDDXDT)),c("PATNO", "PDDXDT")])
+dupPatno <- dxdt$PATNO[which(duplicated(dxdt$PATNO))]
+if(length(dupPatno)>0){
+    toAggr <- dxdt[which(dxdt$PATNO %in% dupPatno),]
+    toAggr <- do.call(rbind, by(
+        toAggr,
+        toAggr$PATNO,
+        function(d){
+            return(data.frame(
+                PATNO=d[1,"PATNO"],
+                PDDXDT=min(d$PDDXDT),
+                stringsAsFactors=F
+            ))
+        }
+    ))
+    dxdt <- rbind(dxdt[which(!dxdt$PATNO %in% dupPatno),], toAggr)
+}
+rownames(dxdt) <- dxdt$PATNO
+dxdt$ENROLL_DATE <- patientData[rownames(dxdt),"ENROLL_DATE"]
+dxdt$DisDuration <- as.double(dxdt$ENROLL_DATE - dxdt$PDDXDT, units="days")/365.25
+patientData$DisDuration <- NA
+patientData[rownames(dxdt),"DisDuration"] <- dxdt$DisDuration
+parDocToAdd <- data.frame(
+    Variable="DisDuration",
+    Description="Duration of the disease at enrollment",
+    Group="Patient",
+    "Sub-group"="PD history",
+    Class=class(patientData$DisDuration),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- "DisDuration"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Unified Parkinson’s Disease Rating Scale (UPDRS)
+
+##  Tremor dominant (TD) 
+
+```{r, echo=FALSE, message=FALSE}
+visitData$TD <- apply(
+   visitData[,
+      c(
+         "NP2TRMR", "NP3PTRMR", "NP3PTRML",
+         "NP3KTRMR", "NP3KTRML", "NP3RTARU",
+         "NP3RTALU", "NP3RTARL", "NP3RTALL",
+         "NP3RTALJ", "NP3RTCON"
+      )
+   ],
+   1,
+   mean
+)
+parDocToAdd <- data.frame(
+    Variable="TD",
+    Description="Tremor dominant score",
+    Group="UPDRS",
+    "Sub-group"="TD/PIGD",
+    Class=class(visitData$TD),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- "TD"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Postural instability/gait difficulty (PIGD)
+
+```{r, echo=FALSE, message=FALSE}
+visitData$PIGD <- apply(
+   visitData[,
+     c(
+        "NP2WALK", "NP2FREZ", "NP3GAIT", "NP3FRZGT",
+        "NP3PSTBL"
+      )
+   ],
+   1,
+   mean
+)
+parDocToAdd <- data.frame(
+    Variable="PIGD",
+    Description="Postural instability/gait difficulty",
+    Group="UPDRS",
+    "Sub-group"="TD/PIGD",
+    Class=class(visitData$PIGD),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- "PIGD"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## TD/PIGD
+
+```{r, echo=FALSE, message=FALSE}
+visitData$TD.PIGD <- visitData$TD/visitData$PIGD
+parDocToAdd <- data.frame(
+    Variable="TD.PIGD",
+    Description="TD/PIGD",
+    Group="UPDRS",
+    "Sub-group"="TD/PIGD",
+    Class=class(visitData$TD.PIGD),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- "TD.PIGD"
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## TD/PIGD
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "TD.PIGD.Cat"
+visitData[,newVar] <- as.factor(ifelse(
+   visitData$TD==0 & visitData$PIGD==0,
+   "Indeterminate",
+   ifelse(
+      visitData$PIGD==0,
+      "TD",
+      ifelse(
+         visitData$TD.PIGD >= 1.15,
+         "TD",
+         ifelse(
+            visitData$TD.PIGD <= 0.9,
+            "PIGD",
+            "Indeterminate"
+         )
+      )
+   )
+))
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="TD/PIGD category",
+    Group="UPDRS",
+    "Sub-group"="TD/PIGD",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## UPDRS1
+
+```{r, echo=FALSE, message=FALSE}
+indScores1 <- c(
+   "NP1COG", "NP1HALL", "NP1DPRS", "NP1ANXS",
+   "NP1APAT", "NP1DDS", "NP1SLPN", "NP1SLPD",
+   "NP1PAIN", "NP1URIN", "NP1CNST", "NP1LTHD",
+   "NP1FATG"
+)
+if(any(!indScores1 %in% colnames(visitData))){
+   print(setdiff(indScores1, colnames(visitData)))
+   stop("not all the updrs1 scores")
+}
+visitData$UPDRS1 <- apply(
+   visitData[,indScores1],
+   1,
+   sum
+)
+```
+
+## UPDRS2
+
+```{r, echo=FALSE, message=FALSE}
+indScores2 <- c(
+   "NP2SPCH", "NP2SALV", "NP2SWAL", "NP2EAT",
+   "NP2DRES", "NP2HYGN", "NP2HWRT", "NP2HOBB",
+   "NP2TURN", "NP2TRMR", "NP2RISE", "NP2WALK",
+   "NP2FREZ"
+)
+if(any(!indScores2 %in% colnames(visitData))){
+   print(setdiff(indScores2, colnames(visitData)))
+   stop("not all the updrs2 scores")
+}
+visitData$UPDRS2 <- apply(
+   visitData[,indScores2],
+   1,
+   sum
+)
+```
+
+## UPDRS3
+
+```{r, echo=FALSE, message=FALSE}
+indScores3 <- c(
+   "NP3SPCH", "NP3FACXP", "NP3RIGN", "NP3RIGRU",
+   "NP3RIGLU", "PN3RIGRL", "NP3RIGLL", "NP3FTAPR",
+   "NP3FTAPL", "NP3HMOVR", "NP3HMOVL",
+   "NP3PRSPR", "NP3PRSPL", "NP3TTAPR",
+   "NP3TTAPL", "NP3LGAGR", "NP3LGAGL",
+   "NP3RISNG", "NP3GAIT", "NP3FRZGT", "NP3PSTBL",
+   "NP3POSTR", "NP3BRADY", "NP3PTRMR",
+   "NP3PTRML", "NP3KTRMR", "NP3KTRML",
+   "NP3RTARU", "NP3RTALU", "NP3RTARL",
+   "NP3RTALL", "NP3RTALJ", "NP3RTCON"
+)
+if(any(!indScores3 %in% colnames(visitData))){
+   print(setdiff(indScores3, colnames(visitData)))
+   stop("not all the updrs3 scores")
+}
+visitData$UPDRS3 <- apply(
+   visitData[,indScores3],
+   1,
+   sum
+)
+## UPDRS
+visitData$UPDRS <- apply(
+   visitData[,c("UPDRS1", "UPDRS2", "UPDRS3")],
+   1,
+   sum
+)
+##
+parDocToAdd <- data.frame(
+    Variable=c("UPDRS1", "UPDRS2", "UPDRS3", "UPDRS"),
+    Description=c(
+        "UPDRS I: evaluation of mentation, behavior, and mood",
+        "UPDRS II: self-evaluation of the activities of daily life (ADLs)",
+        "UPDRS III: clinician-scored monitored motor evaluation",
+        "Unified Parkinson’s Disease Rating Scale"
+    ),
+    Group=rep("UPDRS", 4),
+    "Sub-group"=c("UPDRS1", "UPDRS2", "UPDRS3 pre-treatment", "UPDRS"),
+    Class=rep("numeric", 4),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- c("UPDRS1", "UPDRS2", "UPDRS3", "UPDRS")
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## UPDRS3 post treatment
+
+```{r, echo=FALSE, message=FALSE}
+indScores3 <- paste(
+   indScores3,
+   ".post",
+   sep=""
+)
+if(any(!indScores3 %in% colnames(visitData))){
+   print(setdiff(indScores3, colnames(visitData)))
+   stop("not all the updrs3 postTr scores")
+}
+newVar <- "UPDRS3.post"
+visitData[,newVar] <- apply(
+   visitData[,indScores3],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="UPDRS3 post-treatment",
+    Group="UPDRS",
+    "Sub-group"="UPDRS3 post-treatment",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## UPDRS4
+
+```{r, echo=FALSE, message=FALSE}
+indScores4 <- c(
+    "NP4WDYSK", "NP4DYSKI", "NP4OFF",
+    "NP4FLCTI", "NP4FLCTX", "NP4DYSTN"
+
+)
+if(any(!indScores4 %in% colnames(visitData))){
+   print(setdiff(indScores4, colnames(visitData)))
+   stop("not all the updrs4 scores")
+}
+newVar <- "UPDRS4"
+visitData[,newVar] <- apply(
+   visitData[,indScores4],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="UPDRS IV: complications of therapy",
+    Group="UPDRS",
+    "Sub-group"="UPDRS4",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Orienting features according to dominant side
+
+```{r, echo=FALSE, message=FALSE}
+sidedPar <- data.frame(
+    left=c(
+        "MSLARSP", "MSLLRSP", "COFNLRSP", "COHSLRSP", "SENLARSP", "SENLLRSP", 
+        "RFLLARSP", "RFLLLRSP", "PLRLRSP", "NP3FTAPL", "NP3HMOVL", "NP3PRSPL", 
+        "NP3TTAPL", "NP3LGAGL", "NP3PTRML", "NP3KTRML", "NP3RTALU", "NP3RTALL",
+        "NP3RIGLU", "NP3RIGLL",
+        "NP3FTAPL.post", "NP3HMOVL.post", "NP3PRSPL.post", 
+        "NP3TTAPL.post", "NP3LGAGL.post", "NP3PTRML.post",
+        "NP3KTRML.post", "NP3RTALU.post", "NP3RTALL.post",
+        "NP3RIGLU.post", "NP3RIGLL.post"
+    ),
+    right=c(
+        "MSRARSP", "MSRLRSP", "COFNRRSP", "COHSRRSP", "SENRARSP", "SENRLRSP", 
+        "RFLRARSP", "RFLRLRSP", "PLRRRSP","NP3FTAPR", "NP3HMOVR", "NP3PRSPR", 
+        "NP3TTAPR", "NP3LGAGR", "NP3PTRMR", "NP3KTRMR", "NP3RTARU", "NP3RTARL",
+        "NP3RIGRU", "PN3RIGRL",
+        "NP3FTAPR.post", "NP3HMOVR.post", "NP3PRSPR.post", 
+        "NP3TTAPR.post", "NP3LGAGR.post", "NP3PTRMR.post",
+        "NP3KTRMR.post", "NP3RTARU.post", "NP3RTARL.post",
+        "NP3RIGRU.post", "PN3RIGRL.post"
+    ),
+    stringsAsFactors=F
+)
+sidedPar <- cbind(
+    sidedPar,
+    varDoc[sidedPar$left, c("Description", "Group", "Sub-group", "Class")]
+)
+row.names(sidedPar) <- c()
+sidedPar$Description <- sub(" [lL]eft", "", sidedPar$Description)
+sidedPar$Description <- sub("LUE$", "UE", sidedPar$Description)
+sidedPar$Description <- sub("LLE$", "LE", sidedPar$Description)
+sidedPar$Description <- sub(" -$", "", sidedPar$Description)
+sidedPar$Description <- sub("[bd] ", " ", sidedPar$Description)
+kable(sidedPar)
+sidedPar$Source <- "Derived"
+```
+
+## Contralateral
+
+```{r, echo=FALSE, message=FALSE}
+rn <- c()
+if(exists("varToAdd")) rm(varToAdd)
+for(i in 1:nrow(sidedPar)){
+    lvar <- sidedPar$left[i]
+    rvar <- sidedPar$right[i]
+    lval <- visitData[,lvar]
+    rval <- visitData[,rvar]
+    if(sidedPar$Class[i]=="factor"){
+        lval <- as.character(lval)
+        rval <- as.character(rval)
+    }
+    domSide <- visitData[
+        paste(vPatient(visitData), "SC", sep="."),
+        "DOMSIDE"
+    ]
+    newVar <- do.call(
+        function(x, y) paste(x[which(x==y)], collapse=""),
+        strsplit(c(lvar, rvar), split="")
+    )
+    if(newVar == "3RIGL"){
+        newVar <- "NP3RIGL"
+    }
+    if(newVar == "3RIGL.post"){
+        newVar <- "NP3RIGL.post"
+    }
+    newVar <- paste0(newVar, "_CL")
+    rn <- c(rn, newVar)
+    nval <- ifelse(
+        patientData[vPatient(visitData), "ENROLL_CAT"]=="HC",
+        NA,
+        ifelse(
+            domSide=="Right", #2
+            lval,
+            ifelse(
+                domSide=="Left", #1
+                rval,
+                ifelse(
+                    domSide=="Symmetric", #3
+                    NA,
+                    NA
+                )
+            )
+        )
+    )
+    if(exists("varToAdd")){
+        varToAdd <- data.frame(varToAdd, nval, stringsAsFactors=T)
+    }else{
+        varToAdd <- nval
+    }
+}
+colnames(varToAdd) <- rn
+parDocToAdd <- data.frame(
+    "Variable"=rn,
+    sidedPar[,c("Description", "Group", "Sub-group", "Class", "Source")],
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- rn
+parDocToAdd$Description <- paste(parDocToAdd$Description, "- Contralateral")
+visitData <- cbind(visitData, varToAdd)
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+indScores <- c(
+    "NP3FTAP_CL", "NP3HMOV_CL",
+    "NP3PRSP_CL", "NP3TTAP_CL", 
+    "NP3LGAG_CL", "NP3PTRM_CL", 
+    "NP3KTRM_CL", "NP3RTAU_CL",
+    "NP3RIGU_CL", "NP3RIGL_CL",
+    "NP3RTAL_CL"
+)
+if(any(!indScores %in% colnames(visitData))){
+   print(setdiff(indScores, colnames(visitData)))
+   stop("not all the CL updrs3 scores")
+}
+newVar <- "SUPDRS3_CL"
+visitData[,newVar] <- apply(
+   visitData[,indScores],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Sub-UPDRS3 - Contralateral",
+    Group="UPDRS",
+    "Sub-group"="UPDRS3 pre-treatment",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+indScores <- c(
+    "NP3FTAP.post_CL", "NP3HMOV.post_CL",
+    "NP3PRSP.post_CL", "NP3TTAP.post_CL", 
+    "NP3LGAG.post_CL", "NP3PTRM.post_CL", 
+    "NP3KTRM.post_CL", "NP3RTAU.post_CL",
+    "NP3RIGU.post_CL", "NP3RIGL.post_CL",
+    "NP3RTAL.post_CL"
+)
+if(any(!indScores %in% colnames(visitData))){
+   print(setdiff(indScores, colnames(visitData)))
+   stop("not all the CL updrs3 scores")
+}
+newVar <- "SUPDRS3.post_CL"
+visitData[,newVar] <- apply(
+   visitData[,indScores],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Sub-UPDRS3 post-treatment - Contralateral",
+    Group="UPDRS",
+    "Sub-group"="UPDRS3 post-treatment",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Ipsilateral
+
+```{r, echo=FALSE, message=FALSE}
+rn <- c()
+rm(varToAdd)
+for(i in 1:nrow(sidedPar)){
+    lvar <- sidedPar$left[i]
+    rvar <- sidedPar$right[i]
+    lval <- visitData[,lvar]
+    rval <- visitData[,rvar]
+    if(sidedPar$Class[i]=="factor"){
+        lval <- as.character(lval)
+        rval <- as.character(rval)
+    }
+    domSide <- visitData[
+        paste(vPatient(visitData), "SC", sep="."),
+        "DOMSIDE"
+    ]
+    newVar <- do.call(
+        function(x, y) paste(x[which(x==y)], collapse=""),
+        strsplit(c(lvar, rvar), split="")
+    )
+    if(newVar == "3RIGL"){
+        newVar <- "NP3RIGL"
+    }
+    if(newVar == "3RIGL.post"){
+        newVar <- "NP3RIGL.post"
+    }
+    newVar <- paste0(newVar, "_IL")
+    rn <- c(rn, newVar)
+    nval <- ifelse(
+        patientData[vPatient(visitData), "ENROLL_CAT"]=="HC",
+        NA,
+        ifelse(
+            domSide=="Right", #2
+            rval,
+            ifelse(
+                domSide=="Left", #1
+                lval,
+                ifelse(
+                    domSide=="Symmetric", #3
+                    NA,
+                    NA
+                )
+            )
+        )
+    )
+    if(exists("varToAdd")){
+        varToAdd <- data.frame(varToAdd, nval, stringsAsFactors=T)
+    }else{
+        varToAdd <- nval
+    }
+}
+colnames(varToAdd) <- rn
+parDocToAdd <- data.frame(
+    "Variable"=rn,
+    sidedPar[,c("Description", "Group", "Sub-group", "Class", "Source")],
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- rn
+parDocToAdd$Description <- paste(parDocToAdd$Description, "- Ipsilateral")
+visitData <- cbind(visitData, varToAdd)
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+indScores <- c(
+    "NP3FTAP_IL", "NP3HMOV_IL",
+    "NP3PRSP_IL", "NP3TTAP_IL", 
+    "NP3LGAG_IL", "NP3PTRM_IL", 
+    "NP3KTRM_IL", "NP3RTAU_IL",
+    "NP3RIGU_IL", "NP3RIGL_IL",
+    "NP3RTAL_IL"
+)
+if(any(!indScores %in% colnames(visitData))){
+   print(setdiff(indScores, colnames(visitData)))
+   stop("not all the CL updrs3 scores")
+}
+newVar <- "SUPDRS3_IL"
+visitData[,newVar] <- apply(
+   visitData[,indScores],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Sub-UPDRS3 - Ipsilateral",
+    Group="UPDRS",
+    "Sub-group"="UPDRS3 pre-treatment",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+indScores <- c(
+    "NP3FTAP.post_IL", "NP3HMOV.post_IL",
+    "NP3PRSP.post_IL", "NP3TTAP.post_IL", 
+    "NP3LGAG.post_IL", "NP3PTRM.post_IL", 
+    "NP3KTRM.post_IL", "NP3RTAU.post_IL",
+    "NP3RIGU.post_IL", "NP3RIGL.post_IL",
+    "NP3RTAL.post_IL"
+)
+if(any(!indScores %in% colnames(visitData))){
+   print(setdiff(indScores, colnames(visitData)))
+   stop("not all the CL updrs3 scores")
+}
+newVar <- "SUPDRS3.post_IL"
+visitData[,newVar] <- apply(
+   visitData[,indScores],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Sub-UPDRS3 post-treatment - Ipsilateral",
+    Group="UPDRS",
+    "Sub-group"="UPDRS3 post-treatment",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Non-Motor assessments
+
+## Benton judgment of line oriention test (BJLOT)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "BJLOT"
+# Only on 15 parameters
+visitData[,newVar] <- apply(
+   visitData[,paste("BJLOT", 1:30, sep="")],
+   1,
+   function(x){
+      toRet <- sum(x[seq(1, 29, by=2)]=="Correct")
+      if(is.na(toRet)){
+         toRet <- sum(x[seq(2, 30, by=2)]=="Correct")
+      }
+      return(toRet)
+   }
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Benton judgment of line oriention test (BJLOT)",
+    Group="Non-motor",
+    "Sub-group"="BJLOT",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Epworth sleepiness scale (ESS)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "ESS"
+visitData[,newVar] <- apply(
+   visitData[,paste("ESS", 1:8, sep="")],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Epworth sleepiness scale (ESS)",
+    Group="Non-motor",
+    "Sub-group"="ESS",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "Sleepy"
+visitData[,newVar] <- visitData$ESS >= 10
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Sleepy: ESS >= 10",
+    Group="Non-motor",
+    "Sub-group"="ESS",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Geriatric depression scale (GDS)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "GDS"
+visitData[,newVar] <- apply(
+   visitData[,c(
+      "GDSSATIS", "GDSGSPIR", "GDSHAPPY",
+      "GDSALIVE", "GDSENRGY"
+   )],
+   1,
+   function(x) sum(x==0)
+) + apply(
+   visitData[,c(
+      "GDSDROPD", "GDSEMPTY", "GDSBORED",
+      "GDSAFRAD", "GDSHLPLS", "GDSHOME",
+      "GDSMEMRY", "GDSWRTLS", "GDSHOPLS",
+      "GDSBETER"
+   )],
+   1,
+   function(x) sum(x==1)
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Geriatric depression scale (GDS)",
+    Group="Non-motor",
+    "Sub-group"="GDS",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "Depressed"
+visitData[,newVar] <- visitData$GDS >= 5
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Depressed: GDS >= 5",
+    Group="Non-motor",
+    "Sub-group"="GDS",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Hopkins verbal learning test (HVLT)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "HVLTIR"
+visitData[,newVar] <- apply(
+   visitData[, paste("HVLTRT", 1:3, sep="")],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Hopkins verbal learning test (HVLT) - Immediate Recall",
+    Group="Non-motor",
+    "Sub-group"="HVLT",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+
+## HVLT Discrimination Recognition
+newVar <- "HVLTDR"
+visitData[,newVar] <- visitData$HVLTREC - visitData$HVLTFPRL + visitData$HVLTFPUN
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Hopkins verbal learning test - Discrimination Recognition",
+    Group="Non-motor",
+    "Sub-group"="HVLT",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Letter and number sequencing (LNS)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "LNS"
+visitData[,newVar] <- apply(
+   visitData[, paste("LNS", rep(1:7, each=3), c("A", "B", "C"), sep="")],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Letter and number sequencing (LNS)",
+    Group="Non-motor",
+    "Sub-group"="LNS",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Montreal cognitive assessment (MOCA)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "MOCA"
+visitData[,newVar] <- apply(
+   visitData[,c(
+      "MCAALTTM",
+      "MCACUBE", "MCACLCKC", "MCACLCKN",
+      "MCACLCKH", "MCALION", "MCARHINO",
+      "MCACAMEL", "MCAFDS", "MCABDS",
+      "MCAVIGIL", "MCASER7", "MCASNTNC", "MCAVF",
+      "MCAABSTR", "MCAREC1", "MCAREC2",
+      "MCAREC3", "MCAREC4", "MCAREC5",
+      "MCADATE", "MCAMONTH", "MCAYR",
+      "MCADAY", "MCAPLACE", "MCACITY"
+   )],
+   1,
+   sum
+)
+visitData[,newVar] <- ifelse(
+   patientData[vPatient(visitData), "EDUCYRS"] <= 12 & visitData[,newVar] < 30,
+   visitData[,newVar] + 1,
+   visitData[,newVar]
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Montreal cognitive assessment (MOCA)",
+    Group="Non-motor",
+    "Sub-group"="MOCA",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+   )
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Questionnaire for Impulsive-Compulsive Disorders in PD (QUIP)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "QUIP"
+visitData[,newVar] <- apply(
+   visitData[,c(
+      "CNTRLGMB", "TMGAMBLE"
+   )],
+   1,
+   function(x) any(x=="Yes")
+) + apply(
+   visitData[,c(
+      "CNTRLSEX", "TMSEX"
+   )],
+   1,
+   function(x) any(x=="Yes")
+) + apply(
+   visitData[,c(
+      "CNTRLBUY", "TMBUY"
+   )],
+   1,
+   function(x) any(x=="Yes")
+) + apply(
+   visitData[,c(
+      "CNTRLEAT", "TMEAT"
+   )],
+   1,
+   function(x) any(x=="Yes")
+) + apply(
+   visitData[,c(
+      "TMTORACT", "TMTMTACT", "TMTRWD"
+   )],
+   1,
+   function(x) sum(x=="Yes")
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Questionnaire for Impulsive-Compulsive Disorders in PD (QUIP)",
+    Group="Non-motor",
+    "Sub-group"="QUIP",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## REM (Rapid eye movement) sleep behavior disorder (RBD)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "RBD"
+visitData[,newVar] <- apply(
+   visitData[,c(
+      "DRMVIVID", "DRMAGRAC", "DRMNOCTB",
+      "SLPLMBMV", "SLPINJUR", "DRMVERBL",
+      "DRMFIGHT", "DRMUMV", "DRMOBJFL",
+      "MVAWAKEN", "DRMREMEM", "SLPDSTRB"
+   )],
+   1,
+   function(x) sum(x=="Yes")
+) + apply(
+   visitData[,c(
+      "STROKE", "HETRA", "PARKISM", "RLS",
+      "NARCLPSY", "DEPRS", "EPILEPSY", "BRNINFM",
+      "CNSOTH"
+   )],
+   1,
+   function(x) any(x=="Yes")
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="REM Sleep Behavior disorder (RBD)",
+    Group="Non-motor",
+    "Sub-group"="RBD",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "RBD.pos"
+visitData[,newVar] <- visitData$RBD >=5
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="RBD Positive: RBD >= 5",
+    Group="Non-motor",
+    "Sub-group"="RBD",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+   )
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Scales for outcomes in Parkinson’s disease-autonomic (SCOPA-AUT)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "SCOPA"
+visitData[,newVar] <- apply(
+   visitData[, paste("SCAU", 1:21, sep="")],
+   1,
+   function(x){
+      x <- ifelse(
+         x=="never", 0,
+         ifelse(
+            x=="sometimes", 1,
+            ifelse(
+               x=="regularly", 2,
+               ifelse(
+                  x=="often", 3,
+                  ifelse(
+                     x=="use catheter",
+                     9,
+                     NA
+                  )
+               )
+            )
+         )
+      )
+      sum(ifelse(x==9, 3, x), na.rm=T)
+   }
+) + apply(
+   visitData[, paste("SCAU", 22:25, sep="")],
+   1,
+   function(x){
+      x <- ifelse(
+         x=="never", 0,
+         ifelse(
+            x=="sometimes", 1,
+            ifelse(
+               x=="regularly", 2,
+               ifelse(
+                  x=="often", 3,
+                  ifelse(
+                     x=="not applicable",
+                     9,
+                     NA
+                  )
+               )
+            )
+         )
+      )
+      sum(ifelse(x==9, 0, x), na.rm=T)
+   }
+)
+#### !!! ####
+## Only 2 patients with values for all SCAU22 --> SCAU25
+## ===> do not take NA into account
+#### !!! ####
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Scales for outcomes in Parkinson’s disease-autonomic (SCOPA-AUT)",
+    Group="Non-motor",
+    "Sub-group"="SCOPA-AUT",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Semantic Fluency
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "SFT"
+visitData[,newVar] <- apply(
+   visitData[, c("VLTANIM", "VLTVEG", "VLTFRUIT")],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Semantic fluency",
+    Group="Non-motor",
+    "Sub-group"="Semantic fluency",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## State Trait Anxiety Total Score (STA)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "STA"
+withOriScore <- c(
+   3, 4, 6, 7, 9, 12, 13, 14, 17, 18, 22, 24, 25, 28, 29,
+   31, 32, 35, 37, 38, 40
+)
+visitData[,newVar] <- apply(
+   visitData[, paste("STAIAD", withOriScore, sep="")],
+   1,
+   sum
+) + apply(
+   visitData[, paste("STAIAD", setdiff(1:40, withOriScore), sep="")],
+   1,
+   function(x){
+      x <- (4:1)[x]
+      sum(x)
+   }
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="State Trait Anxiety Total Score",
+    Group="Non-motor",
+    "Sub-group"="STA",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+
+## STAI - State Subscore
+newVar <- "STAI.State"
+withOriScore <- c(
+   3, 4, 6, 7, 9, 12, 13, 14, 17, 18
+)
+visitData[,newVar] <- apply(
+   visitData[, paste("STAIAD", withOriScore, sep="")],
+   1,
+   sum
+) + apply(
+   visitData[, paste("STAIAD", setdiff(1:20, withOriScore), sep="")],
+   1,
+   function(x){
+      x <- (4:1)[x]
+      sum(x)
+   }
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="STAI - State Subscore",
+    Group="Non-motor",
+    "Sub-group"="STA",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+
+## STAI - Trait Subscore
+newVar <- "STAI.Trait"
+withOriScore <- c(
+   22, 24, 25, 28, 29,
+   31, 32, 35, 37, 38, 40
+)
+visitData[,newVar] <- apply(
+   visitData[, paste("STAIAD", withOriScore, sep="")],
+   1,
+   sum
+) + apply(
+   visitData[, paste("STAIAD", setdiff(21:40, withOriScore), sep="")],
+   1,
+   function(x){
+      x <- (4:1)[x]
+      sum(x)
+   }
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="STAI - Trait Subscore",
+    Group="Non-motor",
+    "Sub-group"="STA",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## University of Pennsylvania Smell ID Test (UPSIT)
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "UPSIT"
+visitData[,newVar] <- apply(
+   visitData[, paste("UPSITBK", 1:4, sep="")],
+   1,
+   sum
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="University of Pennsylvania Smell ID Test (UPSIT)",
+    Group="Non-motor",
+    "Sub-group"="UPSIT",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Mild Cognitive Impairment
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "MCI"
+cogScore <- data.frame(
+    HVLTIR=visitData$HVLTIR <= 35,
+    HVLTDR=visitData$HVLTDR <= 35,
+    BJLOT=visitData$BJLOT <= 6,
+    LNS=visitData$LNS <= 6,
+    SFT=visitData$SFT <= 35,
+    SDM=visitData$DVT_SDM <= 35
+)
+cogScore <- apply(
+    cogScore,
+    1,
+    function(x) sum(x)
+)
+visitData[,newVar] <- (
+    visitData$COGDECLN=="Yes" &
+    cogScore >= 2 &
+    visitData$FNCDTCOG=="No"
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Mild Cognitive Impairment",
+    Group="Non-motor",
+    "Sub-group"="Cognitive categorization",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Biological data
+
+## t-tau/Abeta 1-42
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "tTau.Abeta"
+visitData[,newVar] <- visitData$"Total tau"/visitData$"Abeta 42"
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="t-tau/Abeta 1-42",
+    Group="Biological",
+    "Sub-group"="Cerebrospinal fluid",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## p-tau/Abeta 1-42
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "pTau.Abeta"
+visitData[,newVar] <- visitData$"p-Tau181P"/visitData$"Abeta 42"
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="p-tau/Abeta 1-42",
+    Group="Biological",
+    "Sub-group"="Cerebrospinal fluid",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## p-tau/t-tau
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "pTau.tTau"
+visitData[,newVar] <- visitData$"p-Tau181P"/visitData$"Total tau"
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="p-tau/t-tau",
+    Group="Biological",
+    "Sub-group"="Cerebrospinal fluid",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# DatScan
+
+## Contralateral
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "CAUDATE_CL"
+visitData[,newVar] <- ifelse(
+   patientData[vPatient(visitData), "ENROLL_CAT"]=="HC",
+   apply(visitData[, paste("CAUDATE", c("R", "L"), sep="_")], 1, mean),
+   ifelse(
+      visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Right", #2
+      visitData$CAUDATE_L,
+      ifelse(
+         visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Left", #1
+         visitData$CAUDATE_R,
+         ifelse(
+            visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Symmetric", #3
+            apply(visitData[, paste("CAUDATE", c("R", "L"), sep="_")], 1, mean),
+            NA
+         )
+      )
+   )
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="CAUDATE Contralateral",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "PUTAMEN_CL"
+visitData[,newVar] <- ifelse(
+   patientData[vPatient(visitData), "ENROLL_CAT"]=="HC",
+   apply(visitData[, paste("PUTAMEN", c("R", "L"), sep="_")], 1, mean),
+   ifelse(
+      visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Right", #2
+      visitData$PUTAMEN_L,
+      ifelse(
+         visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Left", #1
+         visitData$PUTAMEN_R,
+         ifelse(
+            visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Symmetric", #3
+            apply(visitData[, paste("PUTAMEN", c("R", "L"), sep="_")], 1, mean),
+            NA
+            )
+         )
+      )
+   )
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="PUTAMEN Contralateral",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Ipsilateral
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "CAUDATE_IL"
+visitData[,newVar] <- ifelse(
+   patientData[vPatient(visitData), "ENROLL_CAT"]=="HC",
+   apply(visitData[, paste("CAUDATE", c("R", "L"), sep="_")], 1, mean),
+   ifelse(
+      visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Left", #2
+      visitData$CAUDATE_L,
+      ifelse(
+         visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Right", #1
+         visitData$CAUDATE_R,
+         ifelse(
+            visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Symmetric", #3
+            apply(visitData[, paste("CAUDATE", c("R", "L"), sep="_")], 1, mean),
+            NA
+            )
+         )
+      )
+   )
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="CAUDATE Ipsilateral",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "PUTAMEN_IL"
+visitData[,newVar] <- ifelse(
+   patientData[vPatient(visitData), "ENROLL_CAT"]=="HC",
+   apply(visitData[, paste("PUTAMEN", c("R", "L"), sep="_")], 1, mean),
+   ifelse(
+      visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Left", #2
+      visitData$PUTAMEN_L,
+      ifelse(
+         visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Right", #1
+         visitData$PUTAMEN_R,
+         ifelse(
+            visitData[paste(vPatient(visitData), "SC", sep="."),"DOMSIDE"]=="Symmetric", #3
+            apply(visitData[, paste("PUTAMEN", c("R", "L"), sep="_")], 1, mean),
+            NA
+            )
+         )
+      )
+   )
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="PUTAMEN Ipsilateral",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Mean Caudate
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "CAUDATE"
+visitData[,newVar] <- apply(
+   visitData[,paste(newVar, c("R", "L"), sep="_")],
+   1,
+   mean
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Mean Caudate",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Mean Putamen
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "PUTAMEN"
+visitData[,newVar] <- apply(
+   visitData[,paste(newVar, c("R", "L"), sep="_")],
+   1,
+   mean
+   )
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Mean Putamen",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Mean Striatum
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "STRIATUM"
+visitData[,newVar] <- apply(
+   visitData[,paste(rep(c("CAUDATE", "PUTAMEN"), each=2), rep(c("R", "L"), 2), sep="_")],
+   1,
+   mean
+   )
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Mean Striatum",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Count Density Ratio
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "CDR"
+visitData[,newVar] <- visitData$CAUDATE/visitData$PUTAMEN
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Count Density Ratio: Caudate/Putamen",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "CDR_CL"
+visitData[,newVar] <- visitData$CAUDATE_CL/visitData$PUTAMEN_CL
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Count Density Ratio (CL): Caudate_CL/Putamen_CL",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "CDR_IL"
+visitData[,newVar] <- visitData$CAUDATE_IL/visitData$PUTAMEN_IL
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Count Density Ratio (IL): Caudate_IL/Putamen_IL",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Asymetry Index
+
+```{r, echo=FALSE, message=FALSE}
+newVar <- "CAUDATE_AI"
+visitData[,newVar] <- apply(
+   visitData[,paste("CAUDATE", c("R", "L"), sep="_")],
+   1,
+   function(x){
+      abs(x[2]-x[1])*100/mean(x)
+   }
+)
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Caudate Asymetry Index",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+##
+newVar <- "PUTAMEN_AI"
+visitData[,newVar] <- apply(
+   visitData[,paste("PUTAMEN", c("R", "L"), sep="_")],
+   1,
+   function(x){
+      abs(x[2]-x[1])*100/mean(x)
+   }
+   )
+parDocToAdd <- data.frame(
+    Variable=newVar,
+    Description="Putamen Asymetry Index",
+    Group="Imaging",
+    "Sub-group"="DaTScan",
+    Class=class(visitData[, newVar]),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+## Ratio (\%) to age expected value in healthy control
+
+### DaTScan SBR in healthy controls at the screening visit
+
+```{r, echo=FALSE, message=FALSE}
+datScanFeat <- c(
+   "CAUDATE_L", "CAUDATE_R", "CAUDATE_CL", "CAUDATE_IL", "CAUDATE",
+   "PUTAMEN_L", "PUTAMEN_R", "PUTAMEN_CL", "PUTAMEN_IL", "PUTAMEN",
+   "STRIATUM"
+)
+hcPat <- rownames(patientData)[which(patientData$ENROLL_CAT=="HC")]
+hcScImgTab <- visitData[
+    which(vPatient(visitData) %in% hcPat & vEvent(visitData)=="SC"),
+    datScanFeat
+]
+scDate <- visitInfo[rownames(hcScImgTab), "INFODT"]
+biDate <- patientData[vPatient(hcScImgTab), "BIRTHDT"]
+age <- as.double(scDate - biDate, units="days")/365.25
+gender <- patientData[vPatient(hcScImgTab), "SimpleGender"]
+rownames(hcScImgTab) <- vPatient(hcScImgTab)
+
+### Modeling
+models <- list()
+for(i in colnames(hcScImgTab)){
+    x <- age
+    y <- hcScImgTab[,i]
+    plot(
+        x, y,
+        xlab="Age", ylab="SBR",
+        bg=ifelse(gender=="Male", "blue", "pink"),
+        pch=21,
+        main=i
+    )
+    ##
+    x.m <- x[which(gender=="Male")]
+    y.m <- y[which(gender=="Male")]
+    xyCor.m <- cor.test(x.m,y.m)
+    rsq.m <- xyCor.m$estimate^2
+    pval.m <- xyCor.m$p.value
+    model.m <- lm(y.m~x.m)
+    curve(
+      model.m$coefficients["x.m"]*x + model.m$coefficients["(Intercept)"],
+      col="blue", lwd=2,
+      add=T
+    )
+    legend(
+        "bottomleft",
+        legend=as.expression(c(
+            "Male",
+            paste("Slope =", signif(model.m$coefficients["x.m"],2)),
+            substitute(paste(R^2, "=", r), list(r=signif(rsq.m,2))),
+            substitute(paste(p.value, "=", p), list(p=signif(pval.m,2))),
+            paste("n =", sum(!is.na(x.m) & !is.na(y.m)))
+        )),
+        pch=c(21, rep(19, 4)),
+        pt.bg=c("blue", rep("transparent", 4)),
+        col=c("black", rep("transparent", 4)),
+        cex=0.7
+        #bty="n"
+    )
+    ##
+    x.f <- x[which(gender=="Female")]
+    y.f <- y[which(gender=="Female")]
+    xyCor.f <- cor.test(x.f,y.f)
+    rsq.f <- xyCor.f$estimate^2
+    pval.f <- xyCor.f$p.value
+    model.f <- lm(y.f~x.f)
+    curve(
+        model.f$coefficients["x.f"]*x + model.f$coefficients["(Intercept)"],
+        col="pink", lwd=2,
+        add=T
+    )
+    legend(
+        "topright",
+        legend=as.expression(c(
+            "Female",
+            paste("Slope =", signif(model.f$coefficients["x.f"],2)),
+            substitute(paste(R^2, "=", r), list(r=signif(rsq.f,2))),
+            substitute(paste(p.value, "=", p), list(p=signif(pval.f,2))),
+            paste("n =", sum(!is.na(x.f) & !is.na(y.f)))
+        )),
+        pch=c(21, rep(19, 4)),
+        pt.bg=c("pink", rep("transparent", 4)),
+        col=c("black", rep("transparent", 4)),
+        cex=0.7
+        #bty="n"
+    )
+    ##
+    models <- c(models,list(list(m=model.m, f=model.f)))
+}
+names(models) <- colnames(hcScImgTab)
+```
+
+### Computing ratio (\%) to age expected value for each patient and each visit
+
+```{r, echo=FALSE, message=FALSE}
+toConv <- visitData[, datScanFeat]
+scDate <- visitInfo[rownames(visitData), "INFODT"]
+biDate <- patientData[vPatient(visitData), "BIRTHDT"]
+age <- as.double(scDate - biDate, units="days")/365.25
+age <- ifelse(
+   is.na(age),
+   patientData[vPatient(visitData), "ENROLL_AGE"]+ifelse(
+      vEvent(visitData) == "SC", 0,
+      ifelse(
+         vEvent(visitData)=="V04", 1,
+         ifelse(
+            vEvent(visitData)=="V06", 2,
+            ifelse(
+               vEvent(visitData)=="V10", 4,
+               NA
+            )
+         )
+      )
+   ),
+   age
+)
+gender <- patientData[vPatient(visitData), "SimpleGender"]
+percAgeExp <- c()
+for(i in colnames(toConv)){
+   expVal <- ifelse(
+      gender=="Male",
+      models[[i]]$m$coefficients["x.m"]*age + models[[i]]$m$coefficients["(Intercept)"],
+      models[[i]]$f$coefficients["x.f"]*age + models[[i]]$f$coefficients["(Intercept)"]
+   )
+   percAgeExp <- cbind(percAgeExp, toConv[,i]*100/expVal)
+}
+colnames(percAgeExp) <- paste(colnames(toConv), " (%)", sep="")
+rownames(percAgeExp) <- rownames(toConv)
+visitData <- cbind(visitData, percAgeExp[rownames(visitData),])
+parDocToAdd <- data.frame(
+    Variable=colnames(percAgeExp),
+    Description=paste(colnames(toConv), "- ratio to age expected value in HC"),
+    Group=rep("Imaging", ncol(toConv)),
+    "Sub-group"=rep("DaTScan", ncol(toConv)),
+    Class=rep("numeric", ncol(toConv)),
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+)
+rownames(parDocToAdd) <- colnames(percAgeExp)
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+# Saving the data
+
+```{r, echo=FALSE, message=FALSE}
+varDoc <- varDoc[,setdiff(colnames(varDoc), "Variable")]
+toSave <- c(
+    "dumpDate",
+    "visitDoc", "visitInfo", "scheduledVisits",
+    "varDoc", "patientData", "visitData"
+)
+f <- "PPMI-Derived.rda"
+save(list=toSave, file=f)
+```
+
+The following objects were saved in the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE, results="asis"}
+cat(paste("*", toSave), sep="\n")
+```

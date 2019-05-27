@@ -1,0 +1,4626 @@
+---
+title: "Parsing PPMI Data"
+author: "Patrice Godard"
+date: "`r format(Sys.time(), '%B %d %Y')`"
+abstract: "This document describes how the data provided by the PPMI have been parsed and aggregated."
+output: 
+  BiocStyle::html_document: 
+    fig_width: 9
+    fig_height: 6.5
+    toc: yes
+    keep_md: false
+editor_options: 
+  chunk_output_type: console
+---
+
+<!--
+output:
+    BiocStyle::html_document:
+        toc: true
+        
+output:
+    word_document:
+        toc: true
+-->
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+rm(list=ls())
+null <- gc()
+try(null <- dev.off(), silent=T)
+rm(null)
+library(knitr)
+library(beeswarm)
+library(RColorBrewer)
+dumpDir <- "~/Shared/Data-Science/PPMI/Data/Data-2019-02-06"
+dumpDate <- as.Date(sub("Data-", "", basename(dumpDir)))
+#######
+readPpmiTable <- function(f){
+    toRet <- read.table(
+        file.path(dumpDir, f),
+        na.strings=c(NA, "\b"),
+        sep=",", header=T,
+        stringsAsFactors=F,
+        quote="\"",
+        check.names=F
+    )
+    for(cn in colnames(toRet)) if(class(toRet[,cn])=="character"){
+        toRet[,cn] <- ifelse(toRet[,cn]=="", NA, toRet[,cn])
+    }
+    return(toRet)
+}
+readPpmiTableCustFile <- function(f){
+    toRet <- read.table(
+        f,
+        na.strings=c(NA, "\b"),
+        sep=",", header=T,
+        stringsAsFactors=F,
+        quote="\"",
+        check.names=F
+    )
+    for(cn in colnames(toRet)) if(class(toRet[,cn])=="character"){
+        toRet[,cn] <- ifelse(toRet[,cn]=="", NA, toRet[,cn])
+    }
+    return(toRet)
+}
+#######
+beeswarm <- function(
+    formula,
+    data,
+    corral="density",
+    corralWidth=0.8,
+    do.plot=TRUE,
+    ...
+){
+    if(corral!="density"){
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F,
+                corral=corral,
+                corralWidth=corralWidth
+            ),
+            list(...)
+        ))
+    }else{
+        toRet <- do.call(beeswarm::beeswarm, c(
+            list(
+                formula=formula,
+                data=data,
+                do.plot=F
+            ),
+            list(...)
+        ))
+        toRet <- do.call(rbind, by(
+            toRet,
+            toRet$x.orig,
+            function(d){
+                cpos <- round(mean(d$x, na.rm=T))
+                xos <- d$x - cpos
+                div <- max(abs(xos), na.rm=T)/(corralWidth/2)
+                d$x <- cpos + (xos/div)
+                return(d)
+            }
+        ))
+    }
+    if(do.plot){
+        points(
+            toRet$x, toRet$y,
+            pch=toRet$pch,
+            col=toRet$col, bg=toRet$bg
+        )
+    }
+    invisible(toRet)
+}
+#######
+rebox <- function(bp, boxwex=0.8, ...){
+    sp <- boxwex/2
+    for(i in 1:ncol(bp$stats)){
+        y <- bp$stats[2:4, i]
+        segments(
+            x0=rep(i-sp, length(y)),
+            x1=rep(i+sp, length(y)),
+            y0=y,
+            y1=y,
+            ...
+        )
+    }
+}
+#######
+mdSan <- function(txt){
+    toRet <- txt
+    toRet <- gsub('[_]', '\\\\_', toRet)
+    return(toRet)
+}
+#######
+decode <- function(d, noauto, codeList){
+    toRet <- d
+    coded <- intersect(
+        setdiff(colnames(toRet), noauto),
+        codeList$ITM_NAME
+    )
+    for(cn in coded){
+        decodeTable <- codeList[which(codeList$ITM_NAME==cn),]
+        rownames(decodeTable) <- decodeTable$CODE
+        toDecode <- as.character(toRet[,cn])
+        if(!all(setdiff(toDecode, c(NA, NaN)) %in% rownames(decodeTable))){
+            stop("Bad conversion of ", cn)
+        }
+        decoded <- rep(NA, length(toDecode))
+        takenCodes <- which(!is.na(toDecode))
+        decoded[takenCodes] <- decodeTable[toDecode[takenCodes], "DECODE"]
+        decoded <- ifelse(
+            tolower(decoded) %in% naDecode,
+            NA,
+            decoded
+        )
+        toRet[, cn] <- as.factor(decoded)
+    }
+    return(toRet)
+}
+#######
+smartBind <- function(a, b){
+    if(any(colnames(b) %in% colnames(a))){
+        stop(
+            "The following column are conflicting: ",
+            paste(intersect(colnames(b), colnames(a)))
+        )
+    }
+    rn <- union(rownames(a), rownames(b))
+    aToAdd <- a[rn,,drop=F]
+    rownames(aToAdd) <- rn
+    bToAdd <- b[rn,,drop=F]
+    rownames(bToAdd) <- rn
+    return(cbind(aToAdd, bToAdd))
+}
+#######
+availableFiles <- list.files(dumpDir)
+takenFiles <- c()
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Introduction
+
+This document describes how the data provided by the PPMI have been
+parsed and aggregated.
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Parsing the original files
+
+## Data documentation
+
+Data were dumped from the
+[PPMI website](https://www.ppmi-info.org/access-data-specimens/download-data/) in the
+following directory: *`r mdSan(dumpDir)`*.
+
+Two files are used for documenting the data:
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Data_Dictionary.csv"
+paramDesc <- readPpmiTable("Data_Dictionary.csv")
+paramDesc <- unique(paramDesc[which(paramDesc$ITM_NAME!=""),c("ITM_NAME", "DSCR")])
+paramDesc <- paramDesc[which(!duplicated(paramDesc$ITM_NAME)),]
+## MOST RECENT COMPLETE VERSION !!!
+fr <- "~/Shared/Data-Science/PPMI/Data/Data-2017-03-31/Data_Dictionary.csv"
+prev <- readPpmiTableCustFile(fr)
+prev <- unique(prev[which(prev$ITM_NAME!=""),c("ITM_NAME", "DSCR")])
+prev <- prev[which(!duplicated(prev$ITM_NAME)),]
+paramDesc <- rbind(
+    paramDesc,
+    prev[which(!prev$ITM_NAME %in% paramDesc$ITM_NAME),]
+)
+##
+rownames(paramDesc) <- paramDesc$ITM_NAME
+takenFiles <- unique(c(takenFiles, f))
+```
+
+- *`r mdSan(f)`* is used to get a short description of each parameter.
+
+```{r, echo=FALSE, message=FALSE}
+kable(head(paramDesc), row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Code_List.csv"
+codeList <- readPpmiTable(f)
+codeList <- unique(codeList[, c("ITM_NAME", "CODE", "DECODE")])
+takenFiles <- unique(c(takenFiles, f))
+```
+
+- *`r mdSan(f)`* is used to decode provided value for each parameter.
+
+```{r, echo=FALSE, message=FALSE}
+kable(head(codeList))
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+dataList <- list(
+    doc=c("paramDesc", "codeList")
+)
+```
+
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## General information related to patients
+
+### Cohorts and basic information
+
+Basic information about the patients and the cohort to which they belong can be
+found in the following files:
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Patient_Status.csv"
+cohorts <- readPpmiTable(f)
+cohorts <- unique(cohorts)
+rownames(cohorts) <- cohorts$PATNO
+cohorts[,"ENROLL_DATE"] <- as.Date(
+   paste("01/",cohorts$ENROLL_DATE,sep=""),
+   "%d/%m/%Y"
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+- *`r mdSan(f)`*
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Center-Subject_List.csv"
+centers <- readPpmiTable(f)
+centers <- unique(centers)
+rownames(centers) <- centers$PATNO
+cohorts[,"CNO"] <- centers[rownames(cohorts), "CNO"]
+rm(centers)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+- *`r mdSan(f)`* stores centers to which the patients are associated
+
+```{r, echo=FALSE, message=FALSE}
+kable(head(cohorts), row.names=F)
+```
+
+Here is the current status of enrollment:
+
+```{r, echo=FALSE, message=FALSE}
+kable(table(cohorts[
+    which(!is.na(cohorts$ENROLL_CAT)),
+    c("ENROLL_CAT", "ENROLL_STATUS")
+]), rownames="Cohort")
+```
+
+Here is a short description of the different cohorts:
+
+- De Novo PD Subjects (PD): Subjects with a diagnosis of PD for two
+years or less who are not taking PD medications.
+**Enrollment goal**: 400.
+
+- Control Subjects (HC): Control Subjects without PD who are
+30 years or older and who do not have a first degree blood relative with PD.
+**Enrollment goal**: 200.
+
+- Subjects with Scans without Evidence of a Dopaminergic Deficit (SWEDD):
+Subjects consented as PD subjects who have DaTscans that do not show evidence
+of a dopaminergic deficit.
+**No enrollment goal**.
+
+- Prodromal Subjects (PRODROMA): Subjects without Parkinson's disease who
+have a diagnosis of hyposmia or REM sleep behavior disorder (RBD).
+**Enrollment goal**: 100.
+
+- Genetic Cohort Subjects: Subjects with (GENPD) and without (GENUN)
+Parkinson’s disease who have a genetic mutation in LRRK2, GBA, or SNCA.
+**Enrollment Goal**: 600.
+
+- Genetic Registry Subjects: Subjects with (REGPD) and without (REGUN)
+Parkinson’s disease who have a genetic mutation in LRRK2, GBA, or SNCA or
+a first-degree relative with a LRRK2, GBA, or SNCA mutation who are evaluated
+at less frequent intervals to augment and broaden the follow-up of PD subjects
+and family members with PD associated mutations.
+**Enrollment Goal**: 600.
+
+### Demographics data
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Screening___Demographics.csv"
+demog <- readPpmiTable(f)
+demog <- unique(demog)
+demog <- demog[which(!duplicated(demog$PATNO)),]
+rownames(demog) <- demog$PATNO
+demog[,"BIRTHDT"] <- as.Date(
+   paste("01/01/", demog$BIRTHDT, sep=""),
+   "%d/%m/%Y"
+)
+colToTake <- c(
+   "APPRDX", "BIRTHDT", "GENDER"
+)
+popOriCol <- c(
+   "HISPLAT", "RAINDALS", 
+   "RAASIAN", "RABLACK",
+   "RAHAWOPI", "RAWHITE",
+   "RANOS"
+)
+demog <- demog[rownames(demog), c(colToTake, popOriCol)]
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Demographic data are available in the *`r mdSan(f)`* file.
+
+Below is a summary of gender and age distribution by cohort.
+
+```{r, echo=FALSE, message=FALSE}
+tmp <- intersect(rownames(cohorts), rownames(demog))
+tmp <- cbind(cohorts[tmp,], demog[tmp,])
+kable(table(tmp[,c("ENROLL_CAT", "GENDER")]), rownames="Cohort")
+kable(codeList[which(codeList$ITM_NAME=="GENDER"),], row.names=FALSE)
+```
+
+```{r, echo=FALSE, message=FALSE}
+gender <- ifelse(
+   tmp$GENDER %in% 0:1,
+   "Female",
+   ifelse(tmp$GENDER==2, "Male", NA)
+)
+names(gender) <- rownames(tmp)
+age <- as.double(tmp$ENROLL_DATE - tmp$BIRTHDT, units="days")/365.25
+names(age) <- rownames(tmp)
+toplot <- data.frame(
+    tmp[which(!is.na(tmp$ENROLL_CAT)),"ENROLL_CAT", drop=F],
+    age=age[which(!is.na(tmp$ENROLL_CAT))],
+    gender=gender[which(!is.na(tmp$ENROLL_CAT))]
+)
+bp <- boxplot(
+    age~ENROLL_CAT, data=toplot,
+    col="grey", outline=FALSE,
+    ylim=range(toplot$age),
+    ylab="Age (years)",
+    main="Age by cohort"
+)
+beeswarm(
+    formula=age~ENROLL_CAT, data=toplot,
+    add=TRUE,
+    pwbg=ifelse(toplot$gender=="Female", "#FF808080", "#8080FF80"),
+    col="#00000080",
+    pch=21,
+    corral="density",
+    corralWidth=0.7,
+    priority="random"
+)
+rebox(bp, col="black", lwd=c(1.5,3,1.5))
+legend(
+    "topright",
+    c("Female", "Male"),
+    pch=21,
+    col="#00000080",
+    pt.bg=c("#FF808080", "#8080FF80"),
+    bg="transparent"
+)
+```
+
+Information about origin population is also provided.
+
+```{r, echo=FALSE, message=FALSE}
+kable(do.call(rbind, by(
+    tmp,
+    tmp$ENROLL_CAT,
+    function(d){
+        apply(d[,popOriCol], 2, sum, na.rm=T)
+    }
+)), rownames="Cohort")
+kable(paramDesc[which(paramDesc$ITM_NAME %in% popOriCol),], row.names=F)
+```
+
+### Socio economics data
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Socio-Economics.csv"
+socioEco <- readPpmiTable(f)
+socioEco <- unique(socioEco)
+## Merge duplicated records
+toMerge <- which(duplicated(socioEco[,c("PATNO")]))
+merged <- socioEco[toMerge, c("PATNO")]
+if(length(toMerge)>0){
+    tmpDup <- c()
+    tmpNotDup <- socioEco
+    for(i in toMerge){
+        patno <- socioEco[i, "PATNO"]
+        tmp <- socioEco[
+            which(socioEco$PATNO == patno),
+            ]
+        tmpNotDup <- tmpNotDup[
+            which(tmpNotDup$PATNO != patno),
+            ]
+        tmpDup <- rbind(
+            tmpDup,
+            tmp[which.max(as.Date(paste0("1/", tmp$INFODT), format="%d/%m/%Y")),]
+        )
+    }
+    socioEco <- rbind(tmpNotDup, tmpDup)
+}
+##
+rownames(socioEco) <- socioEco$PATNO
+colToTake <- c("EDUCYRS", "HANDED")
+socioEco <- socioEco[, colToTake, drop=F]
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Socio-economics data are available in the *`r mdSan(f)`* file and include:
+
+- The number of years of education
+
+```{r, echo=FALSE, message=FALSE}
+tmp <- intersect(rownames(cohorts), rownames(socioEco))
+tmp <- cbind(cohorts[tmp,], socioEco[tmp,], gender=gender[tmp])
+toplot <- data.frame(
+    tmp[which(!is.na(tmp$ENROLL_CAT)), c("ENROLL_CAT", "EDUCYRS")],
+    gender=gender[which(!is.na(tmp$ENROLL_CAT))]
+)
+bp <- boxplot(
+    EDUCYRS~ENROLL_CAT, data=toplot,
+    col="grey", outline=FALSE,
+    ylim=range(toplot$EDUCYRS, na.rm=TRUE),
+    ylab="Years of education",
+    main="Education by cohort"
+)
+beeswarm(
+    EDUCYRS~ENROLL_CAT, data=toplot,
+    add=TRUE,
+    pwbg=ifelse(toplot$gender=="Female", "#FF808080", "#8080FF80"),
+    col="#00000080",
+    pch=21,
+    corral="density",
+    corralWidth=0.7,
+    priority="random"
+)
+rebox(bp, col="black", lwd=c(1.5,3,1.5))
+legend(
+    "topright",
+    c("Female", "Male"),
+    pch=21,
+    col="#00000080",
+    pt.bg=c("#FF808080", "#8080FF80"),
+    bg="transparent"
+)
+```
+
+- The main handed side
+
+```{r, echo=FALSE, message=FALSE}
+kable(table(
+    tmp[,c("ENROLL_CAT", "HANDED")]
+), rownames="Cohort")
+kable(codeList[which(codeList$ITM_NAME == "HANDED"),], row.names=F)
+```
+
+### Family PD history
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Family_History__PD_.csv"
+pdHist <- readPpmiTable(f)
+pdHist <- do.call(rbind, by(
+    pdHist,
+    pdHist$PATNO,
+    function(d){
+    vd <- as.Date(paste("01", d$SITE_APRV, sep="/"), format = "%d/%m/%Y")
+    return(d[which.max(vd),])
+    }
+))
+# if(any(pdHist$EVENT_ID != "SC")) stop("Problem with pdHist")
+rownames(pdHist) <- pdHist$PATNO
+# Technical columns to be removed
+pdHist <- pdHist[
+   ,
+   setdiff(
+      colnames(pdHist),
+      c(
+         "PATNO", "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY", "EVENT_ID", "INFODT"
+         )
+      )
+   ]
+takenFiles <- unique(c(takenFiles, f))
+```
+
+PD history in subject family is available in the *`r mdSan(f)`* file.
+
+```{r, echo=FALSE, message=FALSE}
+# kable(head(pdHist), rownames="PATNO")
+kable(paramDesc[which(paramDesc$ITM_NAME %in% colnames(pdHist)),], row.names=F)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+dataList <- c(
+    dataList,
+    list(
+        patient=c(
+            "cohorts", "demog", "socioEco",
+            "pdHist"
+        )
+    )
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## Imaging data
+
+### DaTScan
+
+DaTScan data and annotations are available in the following files:
+
+```{r, echo=FALSE, message=FALSE}
+# f <- "DaTscan_Striatal_Binding_Ratio_Results.csv" ## For 2016-01-11 and before
+f <- "DATScan_Analysis.csv"
+datScanInt <- readPpmiTable(f)
+rownames(datScanInt) <- paste(datScanInt$PATNO, datScanInt$EVENT_ID, sep=".")
+takenFiles <- unique(c(takenFiles, f))
+```
+
+- *`r mdSan(f)`*
+
+```{r, echo=FALSE, message=FALSE}
+f <- "DaTscan_Imaging.csv"
+datScanInfo <- readPpmiTable(f)
+rownames(datScanInfo) <- paste(
+    datScanInfo$PATNO,
+    datScanInfo$EVENT_ID,
+    sep="."
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+- *`r mdSan(f)`*
+
+```{r, echo=FALSE, message=FALSE}
+datScan <- datScanInt
+datScan <- cbind(
+   datScan,
+   "INFODT"=as.Date(
+      paste("01/", datScanInfo[rownames(datScan),"INFODT"], sep=""),
+      "%d/%m/%Y"
+   )
+)
+```
+
+Number of subjects with DaTScan values at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    datScan[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Magnetic reasonance
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Magnetic_Resonance_Imaging.csv"
+magRes <- readPpmiTable(f)
+# Technical columns to be removed
+magRes <- magRes[
+   ,
+   setdiff(
+      colnames(magRes),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"# , "INFODT"
+         )
+      )
+   ]
+# Other columns to exclude
+magRes <- magRes[
+   ,
+   setdiff(
+      colnames(magRes),
+      c(
+         "MRICMPLT", "MRIDT", "MRIWDTI", "MRIWRSS",
+         "MRIXFRYN", "COMM"
+         )
+      )
+   ]
+rownames(magRes) <- paste(magRes$PATNO, magRes$EVENT_ID, sep=".")
+magRes[, "INFODT"] <- as.Date(
+   paste("01/", magRes[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Magnetic resonance data are provided in the *`r mdSan(f)`* file.
+
+```{r, echo=FALSE, message=FALSE}
+kable(codeList[which(codeList$ITM_NAME=="MRIRSLT"),], row.names=F)
+```
+
+Number of subjects with MRI results at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    magRes[which(!is.na(magRes$MRIRSLT)),c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+Beside MRI results, some information about medication is provided in the same
+file and might be redundant or contradictory with information provided in
+medical history.
+
+```{r, echo=FALSE, message=FALSE}
+kable(
+    paramDesc[which(paramDesc$ITM_NAME %in% colnames(magRes)[-c(1:3)]),],
+    row.names=F
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+dataList <- c(
+    dataList,
+    list(
+        imaging=c("datScan", "magRes")
+    )
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## Unified Parkinson's Disease Rating Scale (UPDRS)
+
+### Part I: evaluation of mentation, behavior, and mood
+
+```{r, echo=FALSE, message=FALSE}
+f <- "MDS_UPDRS_Part_I.csv"
+updrs1 <- readPpmiTable(f)
+# Technical columns to be removed
+updrs1 <- updrs1[
+   ,
+   setdiff(
+      colnames(updrs1),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"# ,"INFODT"
+      )
+   )
+]
+updrs1 <- unique(updrs1)
+rownames(updrs1) <- paste(updrs1$PATNO, updrs1$EVENT_ID, sep=".")
+updrs1[, "INFODT"] <- as.Date(
+   paste("01/", updrs1[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Data related to the part I of UPDRS are available in the following files:
+
+- *`r mdSan(f)`* provides the following variables:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(updrs1), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+f <- "MDS_UPDRS_Part_I__Patient_Questionnaire.csv"
+tmp <- readPpmiTable(f)
+# Technical columns to be removed
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"# , "INFODT"
+      )
+   )
+]
+tmp <- unique(tmp)
+rownames(tmp) <- paste(tmp$PATNO, tmp$EVENT_ID, sep=".")
+tmp[, "INFODT"] <- as.Date(
+   paste("01/", tmp[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+- *`r mdSan(f)`* provides the following variables:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(tmp), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+updrs1 <- merge(updrs1, tmp[,setdiff(colnames(tmp), "INFODT")], all=T)
+rownames(updrs1) <- paste(updrs1$PATNO, updrs1$EVENT_ID, sep=".")
+compDate <- rownames(updrs1)[which(is.na(updrs1$INFODT))]
+updrs1[compDate, "INFODT"] <- tmp[compDate, "INFODT"]
+updrs1$INFODT <- as.Date(ifelse(
+    !is.na(tmp[rownames(updrs1), "INFODT"]) &
+        tmp[rownames(updrs1), "INFODT"] < updrs1$INFODT,
+    as.character(tmp[rownames(updrs1), "INFODT"]),
+    as.character(updrs1$INFODT)
+))
+rm(tmp)
+```
+
+Number of subjects with UPDRS1 data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs1[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- rownames(updrs1)[which(apply(
+    updrs1,
+    1,
+    function(x) any(is.na(x))
+))]
+```
+
+Among these results, `r length(toplot)` are not complete:
+
+```{r, echo=FALSE, message=FALSE}
+toplot
+```
+
+### Part II: self-evaluation of the activities of daily life (ADLs)
+
+It includes speech, swallowing, handwriting, dressing, hygiene,
+falling, salivating, turning in bed, walking, and cutting food
+
+```{r, echo=FALSE, message=FALSE}
+f <- "MDS_UPDRS_Part_II__Patient_Questionnaire.csv"
+updrs2 <- readPpmiTable(f)
+# Technical columns to be removed
+updrs2 <- updrs2[
+   ,
+   setdiff(
+      colnames(updrs2),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"# , "INFODT"
+      )
+   )
+]
+updrs2 <- unique(updrs2)
+rownames(updrs2) <- paste(updrs2$PATNO, updrs2$EVENT_ID, sep=".")
+updrs2[, "INFODT"] <- as.Date(
+   paste("01/", updrs2[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Data are provided in the *`r mdSan(f)`* file. 
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(updrs2), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with UPDRS2 data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs2[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Part III: clinician-scored monitored motor evaluation
+
+```{r, echo=FALSE, message=FALSE}
+f <- "MDS_UPDRS_Part_III.csv"
+tmp <- readPpmiTable(f)
+# Technical columns to be removed
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"# , "INFODT"
+      )
+   )
+]
+tmp[, "INFODT"] <- as.Date(
+   paste("01/", tmp[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+# Focus on UPDRS3
+updrs3Col <- grep("3", colnames(tmp), value=T)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Data are provided in the *`r mdSan(f)`* file. 
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in% updrs3Col
+    ),
+], row.names=F)
+```
+
+The rating was done before and after treatment when patients are under
+medication.
+
+#### Before treatment
+
+```{r, echo=FALSE, message=FALSE}
+updrs3.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
+dupPatEv <- updrs3.pre[which(duplicated(updrs3.pre[,1:2])), 1:2]
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking average values.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dupRows <- unlist(apply(
+    dupPatEv,
+    1,
+    function(x){
+        list(which(
+            updrs3.pre$PATNO==as.numeric(x[1]) & updrs3.pre$EVENT_ID==x[2]
+        ))
+    }
+))
+toAggr <- updrs3.pre[dupRows, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    paste(toAggr$PATNO, toAggr$EVENT_ID, sep="."),
+    function(d){
+        toRet <- data.frame(
+            "PATNO"=d[1,"PATNO"],
+            "EVENT_ID"=d[1,"EVENT_ID"],
+            "INFODT"=d[1,"INFODT"],
+            stringsAsFactors=F
+        )
+        toAdd <- apply(
+            d[,updrs3Col],
+            2,
+            function(x){
+                round(mean(x, na.rm=T))
+            }
+        )
+        toRet <- cbind(toRet, t(toAdd))
+        return(toRet)
+    }
+))
+updrs3.pre <- rbind(
+    updrs3.pre[-dupRows, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)],
+    toAggr
+)
+rownames(updrs3.pre) <- paste(updrs3.pre$PATNO, updrs3.pre$EVENT_ID, sep=".")
+```
+
+Number of subjects with UPDRS3 (pre-treatment) data at
+each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs3.pre[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+#### After treatment
+
+```{r, echo=FALSE, message=FALSE}
+updrs3.post <- tmp[which(!is.na(tmp$CMEDTM)),]
+dupPatEv <- updrs3.post[which(duplicated(updrs3.post[,1:2])), 1:2]
+if(nrow(dupPatEv)!=0){
+    stop("Duplicated rows ==> review this section!")
+}
+updrs3.post <- updrs3.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)]
+rownames(updrs3.post) <- paste(
+    updrs3.post$PATNO, updrs3.post$EVENT_ID, sep="."
+)
+```
+
+Number of subjects with UPDRS3 (post-treatment) data at
+each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs3.post[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Part IV: complications of therapy
+
+```{r, echo=FALSE, message=FALSE}
+f <- "MDS_UPDRS_Part_IV.csv"
+updrs4 <- readPpmiTable(f)
+# Technical columns to be removed
+updrs4 <- updrs4[
+   ,
+   setdiff(
+      colnames(updrs4),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"# , "INFODT"
+      )
+   )
+]
+rownames(updrs4) <- paste(updrs4$PATNO, updrs4$EVENT_ID, sep=".")
+updrs4[, "INFODT"] <- as.Date(
+   paste("01/", updrs4[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Data are provided in the *`r mdSan(f)`* file. 
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(updrs4), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with UPDRS4 data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs4[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Part V: Hoehn and Yahr staging of severity of PD
+
+```{r, echo=FALSE, message=FALSE}
+f <- "MDS_UPDRS_Part_III.csv"
+tmp <- readPpmiTable(f)
+# Technical columns to be removed
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"#, "INFODT"
+      )
+   )
+]
+tmp[, "INFODT"] <- as.Date(
+   paste("01/", tmp[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+# Focus on NHY
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Data are provided in the *`r mdSan(f)`* file. 
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(paramDesc$ITM_NAME=="NHY"),
+], row.names=F)
+```
+
+The rating was done before and after treatment when patients are under
+medication.
+
+#### Before treatment
+
+```{r, echo=FALSE, message=FALSE}
+updrs5.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
+dupPatEv <- updrs5.pre[which(duplicated(updrs5.pre[,1:2])), 1:2]
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking average values.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dupRows <- unlist(apply(
+    dupPatEv,
+    1,
+    function(x){
+        list(which(
+            updrs5.pre$PATNO==as.numeric(x[1]) & updrs5.pre$EVENT_ID==x[2]
+        ))
+    }
+))
+toAggr <- updrs5.pre[dupRows, c("PATNO", "EVENT_ID", "INFODT", "NHY")]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    paste(toAggr$PATNO, toAggr$EVENT_ID, sep="."),
+    function(d){
+        toRet <- data.frame(
+            "PATNO"=d[1,"PATNO"],
+            "EVENT_ID"=d[1,"EVENT_ID"],
+            "INFODT"=d[1,"INFODT"],
+            stringsAsFactors=F
+        )
+        toAdd <- apply(
+            d[,"NHY", drop=F],
+            2,
+            function(x){
+                round(mean(x, na.rm=T))
+            }
+        )
+        toRet <- cbind(toRet, t(toAdd))
+        return(toRet)
+    }
+))
+updrs5.pre <- rbind(
+    updrs5.pre[-dupRows, c("PATNO", "EVENT_ID", "INFODT", "NHY")],
+    toAggr
+)
+rownames(updrs5.pre) <- paste(updrs5.pre$PATNO, updrs5.pre$EVENT_ID, sep=".")
+```
+
+Number of subjects with UPDRS5 (pre-treatment) data at
+each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs5.pre[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+#### After treatment
+
+```{r, echo=FALSE, message=FALSE}
+updrs5.post <- tmp[which(!is.na(tmp$CMEDTM)),]
+dupPatEv <- updrs5.post[which(duplicated(updrs5.post[,1:2])), 1:2]
+if(nrow(dupPatEv)!=0){
+    stop("Duplicated rows ==> review this section!")
+}
+updrs5.post <- updrs5.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", "NHY")]
+rownames(updrs5.post) <- paste(
+    updrs5.post$PATNO, updrs5.post$EVENT_ID, sep="."
+)
+```
+
+Number of subjects with UPDRS5 (post-treatment) data at
+each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs5.post[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Part VI: Schwab and England ADL scale
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Modified_Schwab_+_England_ADL.csv"
+updrs6 <- readPpmiTable(f)
+# Technical columns to be removed
+updrs6 <- updrs6[
+   ,
+   setdiff(
+      colnames(updrs6),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"# , "INFODT"
+      )
+   )
+]
+updrs6 <- unique(updrs6)
+rownames(updrs6) <- paste(updrs6$PATNO, updrs6$EVENT_ID, sep=".")
+updrs6[, "INFODT"] <- as.Date(
+   paste("01/", updrs6[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The score is provided in the *`r mdSan(f)`* file. 
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(updrs6), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with UPDRS6 data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    updrs6[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Dyskinesias documentation
+
+```{r, echo=FALSE, message=FALSE}
+f <- "MDS_UPDRS_Part_III.csv"
+tmp <- readPpmiTable(f)
+# Technical columns to be removed
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC"# , "INFODT"
+      )
+   )
+]
+tmp[, "INFODT"] <- as.Date(
+   paste("01/", tmp[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+# Focus on dyskinesias documentation
+dyskCol <- c(
+    "DYSKPRES", "DYSKIRAT", "ANNUAL_TIME_BTW_DOSE_NUPDRS",
+    "ON_OFF_DOSE", "PD_MED_USE"
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Dyskinesias documentation data are provided in the *`r mdSan(f)`* file. 
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in% dyskCol
+    ),
+], row.names=F)
+```
+
+The rating was done before and after treatment when patients are under
+medication.
+
+#### Before treatment
+
+```{r, echo=FALSE, message=FALSE}
+dyskDoc.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
+dupPatEv <- dyskDoc.pre[which(duplicated(dyskDoc.pre[,1:2])), 1:2]
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking average values.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dupRows <- unlist(apply(
+    dupPatEv,
+    1,
+    function(x){
+        list(which(
+            dyskDoc.pre$PATNO==as.numeric(x[1]) & dyskDoc.pre$EVENT_ID==x[2]
+        ))
+    }
+))
+toAggr <- dyskDoc.pre[dupRows, c("PATNO", "EVENT_ID", "INFODT", dyskCol)]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    paste(toAggr$PATNO, toAggr$EVENT_ID, sep="."),
+    function(d){
+        toRet <- data.frame(
+            "PATNO"=d[1,"PATNO"],
+            "EVENT_ID"=d[1,"EVENT_ID"],
+            "INFODT"=d[1,"INFODT"],
+            stringsAsFactors=F
+        )
+        toAdd <- apply(
+            d[,dyskCol],
+            2,
+            function(x){
+                round(mean(x, na.rm=T))
+            }
+        )
+        toRet <- cbind(toRet, t(toAdd))
+        return(toRet)
+    }
+))
+dyskDoc.pre <- rbind(
+    dyskDoc.pre[-dupRows, c("PATNO", "EVENT_ID", "INFODT", dyskCol)],
+    toAggr
+)
+rownames(dyskDoc.pre) <- paste(
+    dyskDoc.pre$PATNO, dyskDoc.pre$EVENT_ID, sep="."
+)
+```
+
+Number of subjects with dyskinesias documentation data before treatment at
+each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    dyskDoc.pre[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+#### After treatment
+
+```{r, echo=FALSE, message=FALSE}
+dyskDoc.post <- tmp[which(!is.na(tmp$CMEDTM)),]
+dupPatEv <- dyskDoc.post[which(duplicated(dyskDoc.post[,1:2])), 1:2]
+if(nrow(dupPatEv)!=0){
+    stop("Duplicated rows ==> review this section!")
+}
+dyskDoc.post <- dyskDoc.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", dyskCol)]
+rownames(dyskDoc.post) <- paste(
+    dyskDoc.post$PATNO, dyskDoc.post$EVENT_ID, sep="."
+)
+```
+
+Number of subjects with dyskinesias documentation data after treatment at
+each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    dyskDoc.post[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+dataList <- c(
+    dataList,
+    list(
+        updrs=c(
+            "updrs1", "updrs2", "updrs3.pre", "updrs3.post",
+            "updrs4", "updrs5.pre", "updrs5.post", "updrs6",
+            "dyskDoc.pre", "dyskDoc.post"
+        )
+    )
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!--
+## Other motor data
+
+#### Data from kinetics device
+
+```{r, echo=FALSE, message=FALSE}
+f <- "TAP-PD_Kinetics_Device_Testing.csv"
+kinDev <- readPpmiTable(f)
+# Technical columns to be removed
+kinDev <- kinDev[
+   ,
+   setdiff(
+      colnames(kinDev),
+      c(
+         "REVISION", "DEVICESN", "SEX", "CONTROL", "NOTES"
+         )
+      )
+   ]
+toKeep <- which(apply(
+   kinDev[, setdiff(colnames(kinDev), c("DOM_SIDE", "AFF_SIDE"))],
+   1,
+   function(x) all(!is.na(x))
+))
+kinDev <- kinDev[toKeep,]
+takenFiles <- unique(c(takenFiles, f))
+toMerge <- which(duplicated(kinDev[,c("PATNO", "TAPDAY")]))
+merged <- kinDev[toMerge, c("PATNO", "TAPDAY")]
+if(length(toMerge)>0){
+	kinDevDup <- c()
+	kinDevNotDup <- kinDev
+	for(i in toMerge){
+	   patno <- kinDev[i, "PATNO"]
+	   tapday <- kinDev[i, "TAPDAY"]
+	   tmp <- kinDev[which(kinDev$PATNO == patno & kinDev$TAPDAY == tapday),]
+	   kinDevNotDup <- kinDevNotDup[which(
+	       kinDevNotDup$PATNO != patno | kinDevNotDup$TAPDAY != tapday
+	   ),]
+	   kinDevDup <- rbind(kinDevDup, cbind(
+	      tmp[1, 1:3],
+	      t(apply(
+	         tmp[,4:13],
+	         2,
+	         function(x) mean(x)
+	      )),
+	      t(apply(
+	         tmp[,14:15],
+	         2,
+	         function(x) paste(unique(x), collapse=",")
+	      ))
+	   ))
+	}
+	kinDev <- rbind(kinDevNotDup, kinDevDup)
+}
+rownames(kinDev) <- paste(kinDev$PATNO, kinDev$TAPDAY, sep=".TD")
+kinDev[, "TESTDATE"] <- as.Date(
+   paste("01/", kinDev[,"TESTDATE"], sep=""),
+   "%d/%m/%Y"
+)
+```
+
+Data from kinetics device are provided in the *`r mdSan(f)`* file for a few patients.
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(kinDev), c("PATNO", "EVENT_ID", "TESTDATE"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with data from kinetics device:
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- unique(merge(
+    kinDev[,c("PATNO"), drop=F],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+))
+toplot <- as.data.frame(table(toplot[,c("ENROLL_CAT")]))
+colnames(toplot) <- c("Cohort", "Number of patients")
+kable(toplot, row.names=F)
+```
+
+Duplicated data have been merge for `r length(toMerge)` record:
+
+```{r, echo=FALSE, message=FALSE}
+kable(merged, row.names=F)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+# dataList <- c(
+#     dataList,
+#     list(
+#         motor=c("kinDev")
+#     )
+# )
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## Medical history
+
+### General physical exam
+
+```{r, echo=FALSE, message=FALSE}
+f <- "General_Physical_Exam.csv"
+physExam <- readPpmiTable(f)
+# Technical columns to be removed
+physExam <- physExam[
+   ,
+   setdiff(
+      colnames(physExam),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+physExam <- physExam[
+   ,
+   grep("CM$", colnames(physExam), value=T, invert=T)
+   ]
+physExam[, "INFODT"] <- as.Date(
+   paste("01/", physExam[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+# Correcting "other" value for PECAT
+physExam$PECAT[which(physExam$PECAT=="other")] <- "Other (Specify location and describe)"
+PhysicalConditions <- unique(physExam$PECAT)
+physExam <- do.call(rbind, by(
+    physExam,
+    physExam$PATNO,
+    function(d){
+        toRet <- do.call(rbind,by(
+            d,
+            d$EVENT_ID,
+            function(dv){
+                toRet <- dv$ABNORM
+                names(toRet) <- dv$PECAT
+                toRet <- toRet[PhysicalConditions]
+                names(toRet) <- PhysicalConditions
+                return(toRet)
+            }
+        ))
+        toRet <- data.frame(
+            PATNO=rep(d$PATNO[1], nrow(toRet)),
+            EVENT_ID=rownames(toRet),
+            INFODT=rep(d$INFODT[1], nrow(toRet)),
+            toRet,
+            stringsAsFactors=F,
+            check.names=F
+        )
+    }
+))
+rownames(physExam) <- paste(physExam$PATNO, physExam$EVENT_ID, sep=".")
+takenFiles <- unique(c(takenFiles, f))
+```
+
+General physical exam is performed at each [visit](#visitInfo). Related data
+are available in the *`r mdSan(f)`* file.
+
+The following functions are assessed:
+
+```{r, echo=FALSE, message=FALSE, results="asis"}
+# kable(head(physExam), row.names=F)
+cat(paste0(
+    "* ",
+    setdiff(colnames(physExam), c("PATNO", "EVENT_ID"))
+), sep="\n")
+```
+
+```{r, echo=FALSE, message=FALSE}
+kable(codeList[which(codeList$ITM_NAME == "ABNORM"),], row.names=F)
+```
+
+Neurological exams were found in two different fields
+(*Neurological* and *NEUROLOGICAL*) which were merged.
+
+```{r, echo=FALSE, message=FALSE}
+if(!all(c("Neurological", "NEUROLOGICAL") %in% colnames(physExam))){
+    stop("Neurological fields changes ==> check this part !")
+}
+if(any(physExam$"Neurological" != physExam$"NEUROLOGICAL", na.rm=T)){
+  warning("Different Neurological depending on the field!")
+}
+physExam$"Neurological" <- as.factor(ifelse(
+  is.na(physExam$"Neurological"),
+  physExam$"NEUROLOGICAL",
+  physExam$"Neurological"
+))
+physExam <- physExam[,-which(colnames(physExam)=="NEUROLOGICAL"), drop=F]
+```
+
+Cardiovascular exams were found in two different fields
+(*Cardiovascular (including peripheral vascular)* and *CARDIOVASCULAR*) which were merged.
+
+```{r, echo=FALSE, message=FALSE}
+if(!all(c("Cardiovascular (including peripheral vascular)", "CARDIOVASCULAR") %in% colnames(physExam))){
+    stop("Cardiovascular fields changes ==> check this part !")
+}
+if(any(physExam$"Cardiovascular (including peripheral vascular)" != physExam$"CARDIOVASCULAR", na.rm=T)){
+  warning("Different Cardiovascular depending on the field!")
+}
+physExam$"Cardiovascular (including peripheral vascular)" <- as.factor(ifelse(
+  is.na(physExam$"Cardiovascular (including peripheral vascular)"),
+  physExam$"CARDIOVASCULAR",
+  physExam$"Cardiovascular (including peripheral vascular)"
+))
+physExam <- physExam[,-which(colnames(physExam)=="CARDIOVASCULAR"), drop=F]
+```
+
+<!--
+
+This information was summarized by patient.
+
+```{r, echo=FALSE, message=FALSE}
+# toAdd <- as.data.frame(do.call(rbind, by(
+#     physExam,
+#     physExam$PATNO,
+#     function(d){
+#         toRet <- apply(
+#             d[,setdiff(colnames(d), c("PATNO", "EVENT_ID")),drop=F],
+#             2,
+#             function(x){
+#                 if(any(x==1, na.rm=T)){
+#                     return("Abnormal")
+#                 }
+#                 if(any(x==0, na.rm=T)){
+#                     return("Normal")
+#                 }
+#                 return(NA)
+#             }
+#         )
+#     }
+# )), sringsAsFactors=T)
+# patients <- cbind(patients, toAdd[rownames(patients),])
+# kable(head(toAdd))
+```
+
+-->
+
+### Clinical diagnosis
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Clinical_Diagnosis_and_Management.csv"
+clinDiag <- readPpmiTable(f)
+clinDiag <- clinDiag[
+   ,
+   setdiff(
+      colnames(clinDiag),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rownames(clinDiag) <- paste(clinDiag$PATNO, clinDiag$EVENT_ID, sep=".")
+clinDiag[, "INFODT"] <- as.Date(
+   paste("01/", clinDiag[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+)
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Clinical diagnosis is provided in the *`r mdSan(f)` file.
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(clinDiag), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with clinical diagnosis data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    clinDiag[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Primary diagnosis
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Primary_Diagnosis.csv"
+primDiag <- readPpmiTable(f)
+# Removing technical column
+primDiag <- primDiag[
+   ,
+   setdiff(
+      colnames(primDiag),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+primDiag <- primDiag[
+   ,
+   setdiff(
+      colnames(primDiag),
+      c(
+         "OTHNEURO"
+         )
+      )
+   ]
+rownames(primDiag) <- paste(primDiag$PATNO, primDiag$EVENT_ID, sep=".")
+primDiag[, "INFODT"] <- as.Date(
+   paste("01/", primDiag[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+takenFiles <- unique(c(takenFiles, f))
+```
+
+Primary diagnosis is provided in the *`r mdSan(f)`* file. The possible
+diagnosis are the following:
+
+```{r, echo=FALSE, message=FALSE}
+kable(codeList[which(codeList$ITM_NAME=="PRIMDIAG"),], row.names=F)
+```
+
+Number of subjects with primary diagnosis at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    primDiag[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+Identified diagnosis (all visits are taken into account):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- table(primDiag$PRIMDIAG)
+toplot <- as.data.frame(toplot)
+decoded <- codeList[which(codeList$ITM_NAME=="PRIMDIAG"), c("CODE", "DECODE")]
+rownames(decoded) <- as.numeric(decoded$CODE)
+toplot <- data.frame(
+    "CODE"=toplot[,1],
+    "Primary Diagnosis"= decoded[toplot[,1], "DECODE"],
+    "Number"= toplot[,2],
+    stringsAsFactors=F,
+    check.names=F
+)
+kable(toplot, row.names=F)
+```
+
+### Diagnosis features
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Diagnostic_Features.csv"
+diagFeat <- readPpmiTable(f)
+diagFeat <- diagFeat[
+   ,
+   setdiff(
+      colnames(diagFeat),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+diagFeat[, "INFODT"] <- as.Date(
+   paste("01/", diagFeat[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+diagFeat <- unique(diagFeat)
+## Merge duplicated records
+toMerge <- which(duplicated(diagFeat[,c("PATNO", "EVENT_ID")]))
+merged <- diagFeat[toMerge, c("PATNO", "EVENT_ID")]
+if(length(toMerge)>0){
+   tmpDup <- c()
+   tmpNotDup <- diagFeat
+   for(i in toMerge){
+      patno <- diagFeat[i, "PATNO"]
+      event <- diagFeat[i, "EVENT_ID"]
+      tmp <- diagFeat[
+          which(diagFeat$PATNO == patno & diagFeat$EVENT_ID == event),
+      ]
+      tmpNotDup <- tmpNotDup[
+          which(tmpNotDup$PATNO != patno | tmpNotDup$EVENT_ID != event),
+      ]
+      tmpDup <- rbind(
+          tmpDup,
+          tmp[which.max(as.Date(tmp$INFODT, format="%Y/%m/%d")),]
+        )
+   }
+   diagFeat <- rbind(tmpNotDup, tmpDup)
+}
+##
+rownames(diagFeat) <- paste(diagFeat$PATNO, diagFeat$EVENT_ID, sep=".")
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The following diagnosis features are available in the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(diagFeat), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with diagnosis features data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    diagFeat[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### General neurological exam
+
+```{r, echo=FALSE, message=FALSE}
+f <- "General_Neurological_Exam.csv"
+neuroExam <- readPpmiTable(f)
+neuroExam <- neuroExam[
+   ,
+   setdiff(
+      colnames(neuroExam),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+# # Remove "comments" fields
+# neuroExam <- neuroExam[
+#    ,
+#    grep("CM$", colnames(neuroExam), value=T, invert=T)
+# ]
+neuroExam[, "INFODT"] <- as.Date(
+   paste("01/", neuroExam[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+neuroExam <- unique(neuroExam)
+rownames(neuroExam) <- paste(neuroExam$PATNO, neuroExam$EVENT_ID, sep=".")
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The following neurological features are available in the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(neuroExam), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with neurological exam data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    neuroExam[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Cranial nerves
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Neurological_Exam_-_Cranial_Nerves.csv"
+cranNerves <- readPpmiTable(f)
+cranNerves <- cranNerves[
+   ,
+   setdiff(
+      colnames(cranNerves),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+# # Remove "commments" fields
+# cranNerves <- cranNerves[
+#    ,
+#    grep("CM$", colnames(cranNerves), value=T, invert=T)
+# ]
+cranNerves[, "INFODT"] <- as.Date(
+   paste("01/", cranNerves[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+cranNerves <- unique(cranNerves)
+rownames(cranNerves) <- paste(cranNerves$PATNO, cranNerves$EVENT_ID, sep=".")
+# for(cn in grep(
+#         "CM$",
+#         setdiff(colnames(cranNerves), c("PATNO", "EVENT_ID", "INFODT")),
+#         invert=T, value=T
+# )){
+#     cranNerves[,cn] <- as.logical(cranNerves[,cn])
+# }
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The following information about cranial nerves function is available
+in the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(cranNerves), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+The function is assessed as being *Normal* or *Abnormal*:
+
+```{r, echo=FALSE, message=FALSE}
+kable(
+    unique(codeList[
+        which(
+            codeList$ITM_NAME %in%
+                setdiff(
+                    colnames(cranNerves),
+                    c("PATNO", "EVENT_ID", "INFODT")
+                )
+        ),
+        c("CODE", "DECODE")
+    ]),
+    row.names=F
+)
+```
+
+Number of subjects with neurological exam data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    cranNerves[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### PD features
+
+```{r, echo=FALSE, message=FALSE}
+f <- "PD_Features.csv"
+pdFeat <- readPpmiTable(f)
+pdFeat[,"PDDXDT"] <- as.Date(
+   paste("01/", pdFeat$PDDXDT, sep=""),
+   "%d/%m/%Y"
+)
+pdFeat <- pdFeat[
+   ,
+   setdiff(
+      colnames(pdFeat),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+pdFeat <- pdFeat[
+   ,
+   setdiff(
+      colnames(pdFeat),
+      c("SXMO", "SXYEAR", "PDDXEST")
+     )
+]
+# Remove "comments" fields
+# pdFeat <- pdFeat[
+#    ,
+#    grep("CM$", colnames(pdFeat), value=T, invert=T)
+#    ]
+pdFeat[, "INFODT"] <- as.Date(
+   paste("01/", pdFeat[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+rownames(pdFeat) <- paste(pdFeat$PATNO, pdFeat$EVENT_ID, sep=".")
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The following PD features are available in the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(pdFeat), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with PD feature assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    pdFeat[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### PD medication
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Use_of_PD_Medication.csv"
+pdMed <- readPpmiTable(f)
+pdMed <- pdMed[
+   ,
+   setdiff(
+      colnames(pdMed),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+# pdMed <- pdMed[
+#    ,
+#    setdiff(
+#       colnames(pdMed),
+#       c(
+#          "FULNUPDR", "PDMEDDT", "PDMEDTM", "NUPDRTM"
+#          )
+#       )
+#    ]
+pdMed[, "INFODT"] <- as.Date(
+   paste("01/", pdMed[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+rownames(pdMed) <- paste(pdMed$PATNO, pdMed$EVENT_ID, sep=".")
+# cn <- "PDMEDYN"
+# tmp[,cn] <- ifelse(tmp[,cn]==0, F, ifelse(tmp[,cn]==1, T, NA))
+# for(cn in setdiff(colnames(tmp), c("PATNO", "EVENT_ID", "INFODT", "PDMEDYN"))){
+#    tmp[,cn] <- ifelse((is.na(tmp[,cn]) & tmp$PDMEDYN) | tmp[,cn]==0, F, ifelse(tmp[,cn]==1, T, NA))
+# }
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The following features related to PD medication are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(pdMed), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with PD medication assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    pdMed[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Vital signs
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Vital_Signs.csv"
+vitSign <- readPpmiTable(f)
+vitSign <- vitSign[
+   ,
+   setdiff(
+      colnames(vitSign),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+vitSign <- vitSign[
+   ,
+   setdiff(
+      colnames(vitSign),
+      c(
+         "BPARM", "COMM"
+         )
+      )
+   ]
+vitSign[, "INFODT"] <- as.Date(
+   paste("01/", vitSign[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+  )
+vitSign <- unique(vitSign)
+rownames(vitSign) <- paste(vitSign$PATNO, vitSign$EVENT_ID, sep=".")
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The vital signs are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(vitSign), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with vital signs assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    vitSign[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+dataList <- c(
+    dataList,
+    list(
+        medHist=c(
+            "physExam", "clinDiag", "primDiag", "diagFeat",
+            "neuroExam", "cranNerves", "pdFeat",
+            "pdMed", "vitSign"
+        )
+    )
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## Non-motor data
+
+### Benton judgment of line oriention test (BJLOT)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Benton_Judgment_of_Line_Orientation.csv"
+bjlot <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+# Removing technical fields
+bjlot <- bjlot[
+   ,
+   setdiff(
+      colnames(bjlot),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+bjlot <- bjlot[
+   ,
+   setdiff(
+      colnames(bjlot),
+      c(
+         "COMM", "AGE_ASSESS_JLO"
+         )
+      )
+   ]
+toKeep <- which(apply(
+   bjlot[,-c(1:3)],
+   1,
+   function(x) any(!is.na(x))
+))
+bjlot <- bjlot[toKeep,]
+## Merge duplicated records
+toMerge <- which(duplicated(bjlot[,c("PATNO", "EVENT_ID")]))
+merged <- bjlot[toMerge, c("PATNO", "EVENT_ID")]
+if(length(toMerge)>0){
+   tmpDup <- c()
+   tmpNotDup <- bjlot
+   for(i in toMerge){
+      patno <- bjlot[i, "PATNO"]
+      event <- bjlot[i, "EVENT_ID"]
+      tmp <- bjlot[
+          which(bjlot$PATNO == patno & bjlot$EVENT_ID == event),
+      ]
+      tmpNotDup <- tmpNotDup[
+          which(tmpNotDup$PATNO != patno | tmpNotDup$EVENT_ID != event),
+      ]
+      tmpDup <- rbind(tmpDup, cbind(
+         tmp[1, 1:3],
+         t(apply(
+            tmp[,4:ncol(tmp)],
+            2,
+            function(x) max(x, na.rm=T)
+            ))
+         ))
+   }
+   bjlot <- rbind(tmpNotDup, tmpDup)
+}
+rownames(bjlot) <- paste(bjlot$PATNO, bjlot$EVENT_ID, sep=".")
+bjlot[, "INFODT"] <- as.Date(
+   paste("01/", bjlot[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+# for(cn in paste("BJLOT", 1:30, sep="")){
+#    tmp[,cn] <- ifelse(tmp[,cn]==0, F, ifelse(tmp[,cn]==1, T, NA))
+# }
+```
+
+Results to the BJLOT are provided in the *`r mdSan(f)`* file.
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(bjlot), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+The response to each item can be:
+
+```{r, echo=FALSE, message=FALSE}
+kable(unique(codeList[
+    which(
+        codeList$ITM_NAME %in% paste0("BJLOT", 1:30)
+    ),
+    c("CODE", "DECODE")
+]), row.names=F)
+```
+
+Number of subjects with BJLOT results at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    bjlot[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+Duplicated data have been merge for `r length(toMerge)` records:
+
+```{r, echo=FALSE, message=FALSE}
+kable(merged, row.names=F)
+```
+
+### Cognitive categorization
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Cognitive_Categorization.csv"
+cogCat <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+cogCat <- cogCat[
+   ,
+   setdiff(
+      colnames(cogCat),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rownames(cogCat) <- paste(cogCat$PATNO, cogCat$EVENT_ID, sep=".")
+cogCat[, "INFODT"] <- as.Date(
+   paste("01/", cogCat[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Cognitive categorization is available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(cogCat), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with cognitive categorization at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    cogCat[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Epworth sleepiness scale (ESS)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Epworth_Sleepiness_Scale.csv"
+ess <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+ess <- ess[
+   ,
+   setdiff(
+      colnames(ess),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rownames(ess) <- paste(ess$PATNO, ess$EVENT_ID, sep=".")
+ess[, "INFODT"] <- as.Date(
+   paste("01/", ess[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Epworth sleepiness scale is available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(ess), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with sleepiness assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    ess[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Geriatric depression scale (GDS)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Geriatric_Depression_Scale__Short_.csv"
+gds <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+gds <- gds[
+   ,
+   setdiff(
+      colnames(gds),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rownames(gds) <- paste(gds$PATNO, gds$EVENT_ID, sep=".")
+gds[, "INFODT"] <- as.Date(
+   paste("01/", gds[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Geriatric depression scale is available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(gds), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+kable(unique(codeList[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(gds), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+    c("CODE", "DECODE")
+]), row.names=F)
+```
+
+Number of subjects with depression assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    gds[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Hopkins verbal learning test (HVLT)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Hopkins_Verbal_Learning_Test.csv"
+hvlt <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+hvlt <- hvlt[
+   ,
+   setdiff(
+      colnames(hvlt),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+hvlt <- hvlt[
+   ,
+   setdiff(
+      colnames(hvlt),
+      c(
+         "AGE_ASSESS_HVLT"
+         )
+      )
+   ]
+rownames(hvlt) <- paste(hvlt$PATNO, hvlt$EVENT_ID, sep=".")
+hvlt[, "INFODT"] <- as.Date(
+   paste("01/", hvlt[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Results to the Hopkins verbal learning test are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(hvlt), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with verbal learning assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    hvlt[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+
+### Letter and number sequencing (LNS)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Letter_-_Number_Sequencing__PD_.csv"
+lns <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+lns <- lns[
+   ,
+   setdiff(
+      colnames(lns),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+lns <- lns[
+   ,
+   setdiff(
+      colnames(lns),
+      c(
+         "AGE_ASSESS_LNS"
+         )
+      )
+   ]
+rownames(lns) <- paste(lns$PATNO, lns$EVENT_ID, sep=".")
+lns[, "INFODT"] <- as.Date(
+   paste("01/", lns[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Results to letter and number sequencing test are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(lns), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with LNS assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    lns[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Montreal cognitive assessment (MOCA)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Montreal_Cognitive_Assessment__MoCA_.csv"
+moca <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+moca <- moca[
+   ,
+   setdiff(
+      colnames(moca),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+moca <- unique(moca)
+rownames(moca) <- paste(moca$PATNO, moca$EVENT_ID, sep=".")
+moca[, "INFODT"] <- as.Date(
+   paste("01/", moca[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Results to the Montreal cognitive assessment test are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(moca), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with MOCA assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    moca[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Questionnaire for Impulsive-Compulsive Disorders in PD (QUIP)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "QUIP_Current_Short.csv"
+quip <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+quip <- quip[
+   ,
+   setdiff(
+      colnames(quip),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rownames(quip) <- paste(quip$PATNO, quip$EVENT_ID, sep=".")
+quip[, "INFODT"] <- as.Date(
+   paste("01/", quip[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Results to the QUIP are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(quip), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with QUIP filled at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    quip[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### REM (Rapid eye movement) sleep behavior disorder (RBD)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "REM_Sleep_Disorder_Questionnaire.csv"
+rbd  <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+rbd <- rbd[
+   ,
+   setdiff(
+      colnames(rbd),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rbd <- unique(rbd)
+rownames(rbd) <- paste(rbd$PATNO, rbd$EVENT_ID, sep=".")
+rbd[, "INFODT"] <- as.Date(
+   paste("01/", rbd[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+RBD data are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(rbd), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with RBD information at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    rbd[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Scales for outcomes in Parkinson's disease-autonomic (SCOPA-AUT)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "SCOPA-AUT.csv"
+scopa <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+scopa <- scopa[
+   ,
+   setdiff(
+      colnames(scopa),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rownames(scopa) <- paste(scopa$PATNO, scopa$EVENT_ID, sep=".")
+scopa[, "INFODT"] <- as.Date(
+   paste("01/", scopa[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+SCOPA data are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(scopa), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with SCOPA information at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    scopa[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Semantic fluency
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Semantic_Fluency.csv"
+semFlue <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+semFlue <- semFlue[
+   ,
+   setdiff(
+      colnames(semFlue),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+semFlue <- semFlue[
+   ,
+   setdiff(
+      colnames(semFlue),
+      c(
+         "AGE_ASSESS_SFTANIM"
+         )
+      )
+   ]
+pvid <- paste(semFlue$PATNO, semFlue$EVENT_ID, sep=".")
+dupPvid <- pvid[which(duplicated(pvid))]
+if(length(dupPvid)>0){
+    dupSemFlue <- semFlue[which(pvid %in% dupPvid),]
+    dupPvid<- pvid[which(pvid %in% dupPvid)]
+    dupSemFlue <- do.call(rbind, by(
+        dupSemFlue,
+        dupPvid,
+        function(d){
+            return(data.frame(
+                PATNO=unique(d$PATNO),
+                EVENT_ID=unique(d$EVENT_ID),
+                INFODT=unique(setdiff(d$INFODT, NA))[1],
+                VLTANIM=mean(d$VLTANIM, na.rm=T),
+                VLTVEG=mean(d$VLTVEG, na.rm=T),
+                VLTFRUIT=mean(d$VLTFRUIT, na.rm=T),
+                DVS_SFTANIM=mean(d$DVS_SFTANIM, na.rm=T),
+                DVT_SFTANIM=mean(d$DVT_SFTANIM, na.rm=T),
+                stringsAsFactors=FALSE
+            ))
+        }
+    ))
+    semFlue <- rbind(
+        semFlue[which(!pvid %in% dupPvid),],
+        dupSemFlue
+    )
+}
+rownames(semFlue) <- paste(semFlue$PATNO, semFlue$EVENT_ID, sep=".")
+semFlue[, "INFODT"] <- as.Date(
+   paste("01/", semFlue[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+Results to semantic fluency test are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(semFlue), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with semantic fluency assessed at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    semFlue[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### State-Trait anxiety (STA)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "State-Trait_Anxiety_Inventory.csv"
+sta  <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+sta <- sta[
+   ,
+   setdiff(
+      colnames(sta),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+rownames(sta) <- paste(sta$PATNO, sta$EVENT_ID, sep=".")
+sta[, "INFODT"] <- as.Date(
+   paste("01/", sta[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+STA data are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(sta), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with STA data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    sta[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### Symbol digit modalities (SDM)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Symbol_Digit_Modalities.csv"
+sdm <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+sdm <- sdm[
+   ,
+   setdiff(
+      colnames(sdm),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+sdm <- sdm[
+   ,
+   setdiff(
+      colnames(sdm),
+      c(
+         "AGE_ASSESS_SDM"
+         )
+      )
+   ]
+rownames(sdm) <- paste(sdm$PATNO, sdm$EVENT_ID, sep=".")
+sdm[, "INFODT"] <- as.Date(
+   paste("01/", sdm[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+SDM data are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(sdm), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with SDM data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    sdm[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+### University of Pennsylvania Smell ID Test (UPSIT)
+
+```{r, echo=FALSE, message=FALSE}
+f <- "University_of_Pennsylvania_Smell_ID_Test.csv"
+upsit <- readPpmiTable(f)
+takenFiles <- unique(c(takenFiles, f))
+upsit <- upsit[
+   ,
+   setdiff(
+      colnames(upsit),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+upsit <- upsit[
+   ,
+   setdiff(
+      colnames(upsit),
+      c(
+         "COMM"
+         )
+      )
+   ]
+upsit <- unique(upsit)
+rownames(upsit) <- paste(upsit$PATNO, upsit$EVENT_ID, sep=".")
+upsit[, "INFODT"] <- as.Date(
+   paste("01/", upsit[,"INFODT"], sep=""),
+   "%d/%m/%Y"
+   )
+```
+
+UPSIT data are available in
+the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(upsit), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with SDM data at each [visit](#visitInfo):
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- merge(
+    upsit[,c("PATNO", "EVENT_ID")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+)
+kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+dataList <- c(
+    dataList,
+    list(
+        nonMotor=c(
+            "bjlot", "cogCat", "ess", "gds",
+            "hvlt", "lns", "moca", "quip",
+            "rbd", "scopa", "semFlue", "sta",
+            "sdm", "upsit"
+        )
+    )
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## Biological data
+
+### Biospecimen analyses
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Current_Biospecimen_Analysis_Results.csv"
+tmp <- unique(readPpmiTable(f))
+takenFiles <- unique(c(takenFiles, f))
+tmp <- tmp[which(tmp$UNITS!="SD" | is.na(tmp$UNITS)),]
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+tmp[, "RUNDATE"] <- as.Date(
+		tmp$RUNDATE,
+		"%Y-%m-%d"
+	)
+tmpOrd <- order(
+	tmp$RUNDATE,
+	decreasing=T
+)
+tmp <- tmp[tmpOrd,]
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "RUNDATE", "PROJECTID", "PI_NAME", "PI_INSTITUTION",
+         "update_stamp", "DIAGNOSIS", "GENDER"
+         )
+      )
+   ]
+tmp[, "EVENT_ID"] <- sub(
+   "^Baseline Collection$", "BL",
+   sub(
+   "^Screening Visit$", "SC",
+   sub(
+   "^Visit ", "V",
+   sub(
+    "Unscheduled 1", "U01",
+   tmp$CLINICAL_EVENT
+))))
+bdDoc <- unique(tmp[,c("TESTNAME", "UNITS", "TYPE")])
+torm <- c(35, 36, 37, 38, 48, 49)
+dupTestNames <- bdDoc$TESTNAME[which(duplicated(bdDoc$TESTNAME))]
+tmp$TESTNAME <- ifelse(
+    tmp$TESTNAME %in% dupTestNames,
+    paste0(tmp$TESTNAME, " (", tmp$UNITS, ")"),
+    tmp$TESTNAME
+)
+bdDoc <- unique(tmp[,c("TESTNAME", "UNITS", "TYPE")])
+rownames(bdDoc) <- bdDoc$TESTNAME
+bdDoc <- bdDoc[order(paste(bdDoc$TYPE, bdDoc$TESTNAME)),]
+cn <-rownames(bdDoc)
+rn <- unique(paste(tmp$PATNO, tmp$EVENT_ID, sep="."))
+tmpVal <- matrix(NA, nrow=length(rn), ncol=length(cn))
+rownames(tmpVal) <- rn
+colnames(tmpVal) <- cn
+```
+
+Biospecimen analysis results are provided in the *`r mdSan(f)`* file.
+The following measurements are available:
+
+```{r, echo=FALSE, message=FALSE}
+kable(bdDoc, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+allDupId <- c()
+for(ci in cn){
+   test <- tmp[which(tmp$TESTNAME==ci),]
+   trn <- paste(test$PATNO, test$EVENT_ID, sep=".")
+   dupId <- unique(trn[which(duplicated(trn))])
+   if(length(dupId) > 0){
+       allDupId <- unique(c(allDupId, dupId))
+       test <- test[!duplicated(trn),]
+   }
+   rownames(test) <- paste(test$PATNO, test$EVENT_ID, sep=".")
+   tmpVal[rownames(test), ci] <- test$TESTVALUE
+}
+tmpVal <- as.data.frame(tmpVal, stringsAsFactors=F)
+```
+
+```{r, echo=FALSE, message=FALSE, results='asis'}
+if(length(allDupId)>0){
+    cat(
+        "Duplicated data were found for the following records.
+        Only the most recent records were kept.\n\n"
+    )
+}
+```
+
+```{r, echo=FALSE, message=FALSE}
+if(length(allDupId)>0){
+    toplot <- do.call(rbind, strsplit(sort(allDupId), split="[.]"))
+    colnames(toplot) <- c("PATNO", "EVENT_ID")
+    kable(toplot, row.names=F)
+}
+```
+
+```{r, echo=FALSE, message=FALSE}
+## Factors: columns with no units; remove SCORE from Factors
+factCol <- setdiff(unique(tmp$TESTNAME[which(is.na(tmp$UNITS))]), "SCORE")
+for(cn in factCol) tmpVal[, cn] <- as.factor(tmpVal[, cn])
+numCol <- setdiff(colnames(tmpVal), factCol)
+for(cn in numCol){
+	convVal <- as.character(tmpVal[,cn])
+	convVal <- ifelse(convVal=="below detection limit", 0, convVal)
+	convVal <- ifelse(convVal=="below", 0, convVal)
+	convVal[grep("<", convVal)] <- 0
+	convVal[grep(">", convVal)] <- "Inf"
+	convVal[grep("above", convVal, ignore.case = T)] <- "Inf"
+	convVal[which(convVal %in% c("Undetermined", "N/A"))] <- NA
+	tmpVal[, cn] <- as.numeric(convVal)
+}
+```
+
+APOE genotypes were found in two different fields
+(*APOE GENOTYPE* and *ApoE Genotype*) which were merged.
+
+```{r, echo=FALSE, message=FALSE}
+if(!all(c("APOE GENOTYPE", "ApoE Genotype") %in% colnames(tmpVal))){
+   stop("APOE genotype fields changes ==> check this part !")
+}
+if(any(tmpVal$"APOE GENOTYPE" != tmpVal$"ApoE Genotype", na.rm=T)){
+  warning("Different APOE genotypes depending on the field!")
+}
+tmpVal$"APOE GENOTYPE" <- as.factor(ifelse(
+  is.na(tmpVal$"APOE GENOTYPE"),
+  as.character(tmpVal$"ApoE Genotype"),
+  as.character(tmpVal$"APOE GENOTYPE")
+))
+tmpVal <- tmpVal[,-which(colnames(tmpVal)=="ApoE Genotype"), drop=F]
+```
+
+PD2 peptoid measurements were found in two different fields
+(*PD2 peptoid* and *PD2 Peptoid*) which were merged.
+
+```{r, echo=FALSE, message=FALSE}
+if(!all(c("PD2 peptoid", "PD2 Peptoid") %in% colnames(tmpVal))){
+    stop("PD2 peptoid fields changes ==> check this part !")
+}
+if(any(tmpVal$"PD2 peptoid" != tmpVal$"PD2 Peptoid", na.rm=T)){
+  warning("Different PD2 peptoid depending on the field!")
+}
+tmpVal$"PD2 peptoid" <- as.numeric(ifelse(
+  is.na(tmpVal$"PD2 peptoid"),
+  tmpVal$"PD2 Peptoid",
+  tmpVal$"PD2 peptoid"
+))
+tmpVal <- tmpVal[,-which(colnames(tmpVal)=="PD2 Peptoid"), drop=F]
+```
+
+```{r, echo=FALSE, message=FALSE}
+biospec <- tmpVal
+```
+
+
+### Blood chemistry and hematology
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Blood_Chemistry___Hematology.csv"
+tmp <- unique(readPpmiTable(f))
+takenFiles <- unique(c(takenFiles, f))
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+tmp[, "LCOLLDT"] <- as.Date(
+   paste("01/", tmp[,"LCOLLDT"], sep=""),
+   "%d/%m/%Y"
+)
+tmp <- tmp[which(tmp$EVENT_ID != "RETEST"),]
+tmp <- tmp[which(!is.na(tmp$LSIRES)),]
+tmpOrd <- order(
+	tmp$LCOLLDT,
+	decreasing=T
+)
+tmp <- tmp[tmpOrd,]
+rn <- unique(paste(tmp$PATNO, tmp$EVENT_ID, sep="."))
+
+idt <- unique(tmp[,c("PATNO", "EVENT_ID", "LCOLLDT")])
+idt <- idt[order(idt$LCOLLDT),]
+idt <- idt[which(!duplicated(idt[,c("PATNO", "EVENT_ID")])),]
+row.names(idt) <- paste(idt$PATNO, idt$EVENT_ID, sep=".")
+colnames(idt) <- c("PATNO", "EVENT_ID", "INFODT")
+
+bcDoc <- unique(tmp[,c("LTSTNAME", "LSIUNIT", "LGROUP")])
+colnames(bcDoc) <- c("TESTNAME", "UNITS", "TYPE")
+bcDoc <- bcDoc[order(paste(bcDoc$TYPE, bcDoc$TESTNAME)),]
+bcDoc <- bcDoc[
+    which(
+        bcDoc$TYPE %in%
+            c("CHEMI", "COAGU", "HEMAT", "LYMPH", "NEUTR", "SERUM")
+    ),
+]
+rownames(bcDoc) <- paste0(
+     sub(" [()][%][)]", "", bcDoc$TESTNAME),
+    ifelse(
+        is.na(bcDoc$UNITS),
+        "",
+        paste0(" (", bcDoc$UNITS, ")")
+    )
+)
+cn <-rownames(bcDoc)
+tmpVal <- matrix(NA, nrow=length(rn), ncol=length(cn))
+rownames(tmpVal) <- rn
+colnames(tmpVal) <- cn
+```
+
+Blood chemistry and hematology results are provided
+in the *`r mdSan(f)`* file.
+The following measurements are available:
+
+```{r, echo=FALSE, message=FALSE}
+kable(bcDoc, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+allDupId <- c()
+for(ci in cn){
+   test <- tmp[
+      which(
+         tmp$LTSTNAME==bcDoc[ci, "TESTNAME"] &
+         if(is.na(bcDoc[ci, "UNITS"]))
+            is.na(tmp$LSIUNIT)
+         else
+            tmp$LSIUNIT==bcDoc[ci,"UNITS"]
+      ),
+   ]
+   trn <- paste(test$PATNO, test$EVENT_ID, sep=".")
+   dupId <- unique(trn[which(duplicated(trn))])
+   if(length(dupId) > 0){
+       allDupId <- unique(c(allDupId, dupId))
+       test <- test[!duplicated(trn),]
+   }
+   rownames(test) <- paste(test$PATNO, test$EVENT_ID, sep=".")
+   tmpVal[rownames(test), ci] <- test$LSIRES
+}
+tmpVal <- as.data.frame(tmpVal, stringsAsFactors=F)
+```
+
+```{r, echo=FALSE, message=FALSE, results='asis'}
+if(length(allDupId)>0){
+    cat(
+        "Duplicated data were found for the following records.
+        Only the most recent records were kept.\n\n"
+    )
+}
+```
+
+```{r, echo=FALSE, message=FALSE}
+if(length(allDupId)>0){
+    toplot <- do.call(rbind, strsplit(sort(allDupId), split="[.]"))
+    colnames(toplot) <- c("PATNO", "EVENT_ID")
+    kable(toplot, row.names=F)
+}
+```
+
+```{r, echo=FALSE, message=FALSE}
+## Factors: columns with no units; remove Hematocrit from Factors
+factCol <- setdiff(rownames(bcDoc[which(is.na(bcDoc$UNITS)),]), "Hematocrit")
+for(cn in factCol) tmpVal[, cn] <- as.factor(tmpVal[, cn])
+numCol <- setdiff(colnames(tmpVal), factCol)
+for(cn in numCol){
+	convVal <- as.character(tmpVal[,cn])
+	convVal <- ifelse(convVal=="Not ident. w/i", NA, convVal)
+	convVal[grep("<", convVal)] <- "0"
+	tmpVal[, cn] <- as.numeric(convVal)
+}
+blood <- tmpVal
+blood <- cbind(idt[rownames(blood),], blood)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<!-- Data to process -->
+```{r, echo=FALSE, message=FALSE}
+dataList <- c(
+    dataList,
+    list(
+        biology=c("biospec", "bdDoc", "blood", "bcDoc")
+    )
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## Downloaded files
+
+### Data files taken into account
+
+```{r, echo=FALSE, message=FALSE}
+takenFiles
+```
+
+### Ignored data files
+
+```{r, echo=FALSE, message=FALSE}
+setdiff(availableFiles, takenFiles)
+```
+
+### Documentation files
+
+- **General documentation**
+
+```{r, echo=FALSE, message=FALSE}
+gendoc <- c(
+    grep("Data_Acquisition_and_Usage", availableFiles, value=T),
+    grep("PPMI_Derived_Variable", availableFiles, value=T),
+    "PPMI_Datasets_Overview.xlsx"
+)
+gendoc
+```
+
+
+- **Other documentation**
+
+```{r, echo=FALSE, message=FALSE}
+setdiff(
+    grep("[.]csv$", availableFiles, value=T, invert=T),
+    gendoc
+)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Aggregating the different results and documentating variables
+
+```{r, echo=FALSE, message=FALSE}
+naDecode <- tolower(c( 
+   "Not applicable",
+   "Not tested", "NotAssessed",
+   "Unable to test",
+   "Unknown", "Unscheduled",
+   "Unknown or not reported",
+   "Not reported", "NA", "",
+   "Not available"
+))
+varDoc <- data.frame(
+    "Variable"=c(),
+    "Description"=c(),
+    "Group"=c(),
+    "Sub-group"=c(),
+    "Class"=c(),
+    stringsAsFactors=F,
+    check.names=F
+)
+colnames(paramDesc) <- c("Variable", "Description")
+```
+
+## Static data
+
+Some data are not followed-up during the PPMI study.
+They are stored in the following object:
+
+- **patientData**
+
+It includes:
+
+- Cohort information
+
+```{r, echo=FALSE, message=FALSE}
+cohorts <- cohorts[, setdiff(colnames(cohorts), "PATNO")]
+cohorts$RECRUITMENT_CAT <- as.factor(cohorts$RECRUITMENT_CAT)
+cohorts$IMAGING_CAT <- as.factor(cohorts$IMAGING_CAT)
+cohorts$ENROLL_CAT <- as.factor(cohorts$ENROLL_CAT)
+cohorts$ENROLL_STATUS <- as.factor(cohorts$ENROLL_STATUS)
+cohorts$CNO <- as.factor(cohorts$CNO)
+notAuto <- c(
+    "RECRUITMENT_CAT", "IMAGING_CAT",
+    "ENROLL_CAT", "ENROLL_STATUS", "CNO"
+)
+cohorts <- decode(cohorts, notAuto, codeList)
+colClasses <- c()
+for(cn in colnames(cohorts)){
+    colClasses <- c(colClasses, class(cohorts[,cn]))
+}
+names(colClasses) <- colnames(cohorts)
+if(!all(colnames(cohorts) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(cohorts),]
+docToAdd$Group <- "Patient"
+docToAdd$"Sub-group" <- "Cohort"
+docToAdd$Class <- colClasses
+patientData <- cohorts
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- Demographic data
+
+```{r, echo=FALSE, message=FALSE}
+demog <- decode(demog, c(), codeList)
+colClasses <- c()
+for(cn in colnames(demog)){
+    colClasses <- c(colClasses, class(demog[,cn]))
+}
+names(colClasses) <- colnames(demog)
+if(!all(colnames(demog) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(demog),]
+docToAdd$Group <- "Patient"
+docToAdd$"Sub-group" <- "Demographic"
+docToAdd$Class <- colClasses
+patientData <- smartBind(patientData, demog)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- Socio-economic data
+
+```{r, echo=FALSE, message=FALSE}
+socioEco <- decode(socioEco, c(), codeList)
+colClasses <- c()
+for(cn in colnames(socioEco)){
+    colClasses <- c(colClasses, class(socioEco[,cn]))
+}
+names(colClasses) <- colnames(socioEco)
+if(!all(colnames(socioEco) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(socioEco),]
+docToAdd$Group <- "Patient"
+docToAdd$"Sub-group" <- "Socio-economic"
+docToAdd$Class <- colClasses
+patientData <- smartBind(patientData, socioEco)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- PD history
+
+```{r, echo=FALSE, message=FALSE}
+pdHist <- decode(pdHist, c(), codeList)
+colClasses <- c()
+for(cn in colnames(pdHist)){
+    colClasses <- c(colClasses, class(pdHist[,cn]))
+}
+names(colClasses) <- colnames(pdHist)
+if(!all(colnames(pdHist) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(pdHist),]
+docToAdd$Group <- "Patient"
+docToAdd$"Sub-group" <- "PD history"
+docToAdd$Class <- colClasses
+patientData <- smartBind(patientData, pdHist)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+<a name="visitInfo"></a>
+
+## Visits
+
+Patient condition is assessed at different visit.
+
+```{r, echo=FALSE, message=FALSE}
+visitDoc <- codeList[which(codeList$ITM_NAME=="EVENT_ID"), c("CODE", "DECODE")]
+colnames(visitDoc) <- c("EVENT_ID", "Description")
+kable(visitDoc, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+visData <- c(
+    "physExam",
+    unlist(dataList[c("imaging", "updrs", "medHist", "nonMotor")]),
+    "blood"
+)
+visitInfo <- c()
+for(i in visData){
+    tmp <- get(i)
+    visitInfo <- rbind(visitInfo, tmp[,c("PATNO", "EVENT_ID", "INFODT")])
+}
+visitInfo <- unique(visitInfo)
+rownames(visitInfo) <- c()
+rn <- paste(visitInfo$PATNO, visitInfo$EVENT_ID, sep=".")
+confInfo <- unique(rn[which(duplicated(rn))])
+toAggr <- visitInfo[which(rn %in% confInfo),]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    rn[which(rn %in% confInfo)],
+    function(d){
+        if(all(is.na(d$INFODT))){
+            infodt <- NA
+        }else{
+            infodt <- min(d$INFODT, na.rm=T)
+        }
+        toRet <- data.frame(
+            PATNO=d[1,"PATNO"],
+            EVENT_ID=d[1,"EVENT_ID"],
+            INFODT=infodt
+        )
+    }
+))
+visitInfo <- rbind(
+    visitInfo[which(!rn %in% confInfo),],
+    toAggr
+)
+rownames(visitInfo) <- paste(visitInfo$PATNO, visitInfo$EVENT_ID, sep=".")
+## Add visits for biospecimen and blood results
+toAdd <- as.data.frame(unique(rbind(
+    do.call(rbind, strsplit(rownames(biospec), split="[.]")),
+    do.call(rbind, strsplit(rownames(blood), split="[.]"))
+)), stringsAsFactors=F)
+colnames(toAdd) <- c("PATNO", "EVENT_ID")
+rownames(toAdd) <- paste(toAdd$PATNO, toAdd$EVENT_ID, sep=".")
+toAdd <- toAdd[which(!rownames(toAdd) %in% rownames(visitInfo)),]
+toAdd$INFODT <- NA
+visitInfo <- rbind(visitInfo, toAdd)
+```
+
+### Scheduled visits
+
+```{r, echo=FALSE, message=FALSE}
+scheduledVisits <- c(
+    "SC", "BL",
+    grep(
+        "^V[[:digit:]]*$",
+        codeList[which(codeList$ITM_NAME=="EVENT_ID"), "CODE"],
+        value=TRUE
+    )
+)
+scheduledVisits <-  codeList[
+    which(codeList$ITM_NAME=="EVENT_ID" & codeList$CODE %in% scheduledVisits),
+    c("CODE", "DECODE")
+]
+colnames(scheduledVisits) <- c("Visit", "Description")
+rownames(scheduledVisits) <- scheduledVisits$Visit
+scheduledVisits$Month <- as.numeric(ifelse(
+    scheduledVisits$Visit=="SC",
+    "-1.5",
+    ifelse(
+        scheduledVisits$Visit=="BL",
+        "0",
+        sub(
+            "[)]$", "",
+            sub(
+                ".*[(]Month ", "",
+                scheduledVisits$Description
+            )
+        )
+    )
+))
+scheduledVisits <- scheduledVisits[order(scheduledVisits$Month),]
+kable(scheduledVisits, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- visitInfo[which(visitInfo$EVENT_ID %in% rownames(scheduledVisits)),]
+toplot <- merge(
+    toplot,
+    patientData[,"ENROLL_CAT", drop=F],
+    by.x="PATNO", by.y=0
+)
+toplot <- toplot[which(!is.na(toplot$ENROLL_CAT)),]
+bp <- boxplot(
+    INFODT~EVENT_ID, data=toplot,
+    col="grey", outline=FALSE,
+    ylim=range(toplot$INFODT, na.rm=T),
+    ylab="Date",
+    main="Visit date"
+)
+coln <- sort(as.character(unique(toplot$ENROLL_CAT)))
+colLeg <- brewer.pal(n=length(coln), name="Set3")
+colLeg <- paste0(colLeg, "AA")
+names(colLeg) <- coln
+beeswarm(
+    formula=INFODT~EVENT_ID, data=toplot,
+    add=TRUE,
+    pwbg=colLeg[toplot$ENROLL_CAT],
+    col="#00000080",
+    pch=21,
+    corral="density",
+    corralWidth=0.7,
+    priority="random"
+)
+rebox(bp, col="black", lwd=c(1.5,3,1.5))
+legend(
+    "bottomright",
+    names(colLeg),
+    pch=21,
+    col="#00000080",
+    pt.bg=colLeg,
+    ncol=2,
+    bg="transparent"
+)
+```
+
+### Followed-up variables
+
+All these variables are stored in the following object:
+
+- **visitData**
+
+It includes:
+
+- Imaging
+
+    - DaTScan
+
+```{r, echo=FALSE, message=FALSE}
+datScan <- datScan[,
+    setdiff(colnames(datScan), c("PATNO", "EVENT_ID", "INFODT"))
+]
+datScan <- decode(datScan, c(), codeList)
+colClasses <- c()
+for(cn in colnames(datScan)){
+    colClasses <- c(colClasses, class(datScan[,cn]))
+}
+names(colClasses) <- colnames(datScan)
+if(!all(colnames(datScan) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(datScan),]
+docToAdd$Group <- "Imaging"
+docToAdd$"Sub-group" <- "DaTScan"
+docToAdd$Class <- colClasses
+# visitData <- smartBind(visitData, datScan)
+visitData <- datScan
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Magnetic resonance
+
+```{r, echo=FALSE, message=FALSE}
+magRes <- magRes[,
+    setdiff(colnames(magRes), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+magRes <- magRes[,
+    setdiff(
+        colnames(magRes),
+        c("PDMEDYN", "ONLDOPA", "ONDOPAG", "ONOTHER", "PDMEDDT")
+    ),
+    drop=F
+]
+magRes <- decode(magRes, c(), codeList)
+colClasses <- c()
+for(cn in colnames(magRes)){
+    colClasses <- c(colClasses, class(magRes[,cn]))
+}
+names(colClasses) <- colnames(magRes)
+if(!all(colnames(magRes) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(magRes),]
+docToAdd$Group <- "Imaging"
+docToAdd$"Sub-group" <- "Magnetic resonance"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, magRes)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- UPDRS
+
+    - UPDRS1
+
+```{r, echo=FALSE, message=FALSE}
+updrs1 <- updrs1[,
+    setdiff(colnames(updrs1), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs1 <- decode(updrs1, c(), codeList)
+colClasses <- c()
+for(cn in colnames(updrs1)){
+    colClasses <- c(colClasses, class(updrs1[,cn]))
+}
+names(colClasses) <- colnames(updrs1)
+if(!all(colnames(updrs1) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs1),]
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS1"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs1)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - UPDRS2
+
+```{r, echo=FALSE, message=FALSE}
+updrs2 <- updrs2[,
+    setdiff(colnames(updrs2), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs2 <- decode(updrs2, c(), codeList)
+colClasses <- c()
+for(cn in colnames(updrs2)){
+    colClasses <- c(colClasses, class(updrs2[,cn]))
+}
+names(colClasses) <- colnames(updrs2)
+if(!all(colnames(updrs2) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs2),]
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS2"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs2)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - UPDRS3
+
+```{r, echo=FALSE, message=FALSE}
+updrs3.pre <- updrs3.pre[,
+    setdiff(colnames(updrs3.pre), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs3.pre <- decode(updrs3.pre, c(), codeList)
+colClasses <- c()
+for(cn in colnames(updrs3.pre)){
+    colClasses <- c(colClasses, class(updrs3.pre[,cn]))
+}
+names(colClasses) <- colnames(updrs3.pre)
+if(!all(colnames(updrs3.pre) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs3.pre),]
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS3 pre-treatment"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs3.pre)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+```{r, echo=FALSE, message=FALSE}
+updrs3.post <- updrs3.post[,
+    setdiff(colnames(updrs3.post), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs3.post <- decode(updrs3.post, c(), codeList)
+colClasses <- c()
+for(cn in colnames(updrs3.post)){
+    colClasses <- c(colClasses, class(updrs3.post[,cn]))
+}
+names(colClasses) <- colnames(updrs3.post)
+if(!all(colnames(updrs3.post) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs3.post),]
+rownames(docToAdd) <- docToAdd$Variable <- paste0(docToAdd$Variable, ".post")
+colnames(updrs3.post) <- paste0(colnames(updrs3.post), ".post")
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS3 post-treatment"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs3.post)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - UPDRS4
+
+```{r, echo=FALSE, message=FALSE}
+updrs4 <- updrs4[,
+    setdiff(colnames(updrs4), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs4 <- decode(updrs4, c(), codeList)
+colClasses <- c()
+for(cn in colnames(updrs4)){
+    colClasses <- c(colClasses, class(updrs4[,cn]))
+}
+names(colClasses) <- colnames(updrs4)
+if(!all(colnames(updrs4) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs4),]
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS4"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs4)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - UPDRS5
+
+```{r, echo=FALSE, message=FALSE}
+updrs5.pre <- updrs5.pre[,
+    setdiff(colnames(updrs5.pre), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs5.pre <- decode(updrs5.pre, c(), codeList)
+colClasses <- c()
+for(cn in colnames(updrs5.pre)){
+    colClasses <- c(colClasses, class(updrs5.pre[,cn]))
+}
+names(colClasses) <- colnames(updrs5.pre)
+if(!all(colnames(updrs5.pre) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs5.pre),]
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS5 pre-treatment"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs5.pre)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+```{r, echo=FALSE, message=FALSE}
+updrs5.post <- updrs5.post[,
+    setdiff(colnames(updrs5.post), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs5.post <- decode(updrs5.post, c(), codeList)
+colClasses <- c()
+for(cn in colnames(updrs5.post)){
+    colClasses <- c(colClasses, class(updrs5.post[,cn]))
+}
+names(colClasses) <- colnames(updrs5.post)
+if(!all(colnames(updrs5.post) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs5.post),]
+rownames(docToAdd) <- docToAdd$Variable <- paste0(docToAdd$Variable, ".post")
+colnames(updrs5.post) <- paste0(colnames(updrs5.post), ".post")
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS5 post-treatment"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs5.post)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - UPDRS6
+
+```{r, echo=FALSE, message=FALSE}
+updrs6 <- updrs6[,
+    setdiff(colnames(updrs6), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+updrs6 <- decode(updrs6, c("MSEADLG"), codeList)
+colClasses <- c()
+for(cn in colnames(updrs6)){
+    colClasses <- c(colClasses, class(updrs6[,cn]))
+}
+names(colClasses) <- colnames(updrs6)
+if(!all(colnames(updrs6) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(updrs6),]
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "UPDRS6"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, updrs6)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Dyskinesias documentation
+
+```{r, echo=FALSE, message=FALSE}
+dyskDoc.pre <- dyskDoc.pre[,
+    setdiff(colnames(dyskDoc.pre), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+dyskDoc.pre <- dyskDoc.pre[,
+    setdiff(colnames(dyskDoc.pre), c("ANNUAL_TIME_BTW_DOSE_NUPDRS")),
+    drop=F
+]
+dyskDoc.pre <- decode(dyskDoc.pre, c(), codeList)
+colClasses <- c()
+for(cn in colnames(dyskDoc.pre)){
+    colClasses <- c(colClasses, class(dyskDoc.pre[,cn]))
+}
+names(colClasses) <- colnames(dyskDoc.pre)
+if(!all(colnames(dyskDoc.pre) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(dyskDoc.pre),]
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "Dyskinesias pre-treatment"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, dyskDoc.pre)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dyskDoc.post <- dyskDoc.post[,
+    setdiff(colnames(dyskDoc.post), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+dyskDoc.post <- dyskDoc.post[,
+    setdiff(colnames(dyskDoc.post), c("ANNUAL_TIME_BTW_DOSE_NUPDRS")),
+    drop=F
+]
+dyskDoc.post <- decode(dyskDoc.post, c(), codeList)
+colClasses <- c()
+for(cn in colnames(dyskDoc.post)){
+    colClasses <- c(colClasses, class(dyskDoc.post[,cn]))
+}
+names(colClasses) <- colnames(dyskDoc.post)
+if(!all(colnames(dyskDoc.post) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(dyskDoc.post),]
+rownames(docToAdd) <- docToAdd$Variable <- paste0(docToAdd$Variable, ".post")
+colnames(dyskDoc.post) <- paste0(colnames(dyskDoc.post), ".post")
+docToAdd$Group <- "UPDRS"
+docToAdd$"Sub-group" <- "Dyskinesias post-treatment"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, dyskDoc.post)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- Medical history
+
+    - Physical exam
+
+```{r, echo=FALSE, message=FALSE}
+physExam <- physExam[,
+    setdiff(colnames(physExam), c("PATNO", "EVENT_ID", "INFODT"))
+]
+decodeTable <- codeList[
+    which(codeList$ITM_NAME == "ABNORM"),
+    c("CODE", "DECODE")
+]
+rownames(decodeTable)<- decodeTable$CODE
+for(cn in colnames(physExam)){
+    toDecode <- as.character(physExam[,cn])
+    if(!all(setdiff(toDecode, NA) %in% rownames(decodeTable))){
+        stop("Bad conversion of ", cn)
+    }
+    decoded <- rep(NA, length(toDecode))
+    takenCodes <- which(!is.na(toDecode))
+    decoded[takenCodes] <- decodeTable[toDecode[takenCodes], "DECODE"]
+    decoded <- ifelse(
+        tolower(decoded) %in% naDecode,
+        NA,
+        decoded
+    )
+    physExam[, cn] <- as.factor(decoded)
+}
+colClasses <- c()
+for(cn in colnames(physExam)){
+    colClasses <- c(colClasses, class(physExam[,cn]))
+}
+names(colClasses) <- colnames(physExam)
+# if(!all(colnames(physExam) %in% rownames(paramDesc))){
+#     stop("Missing variable description")
+# }
+docToAdd <- data.frame(
+    Variable=colnames(physExam),
+    Description="Physical exam",
+    stringsAsFactors=F
+)
+rownames(docToAdd) <- docToAdd$Variable
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "Physical exam"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, physExam)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Clinical diagnosis
+
+```{r, echo=FALSE, message=FALSE}
+clinDiag <- clinDiag[,
+    setdiff(colnames(clinDiag), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+clinDiag <- clinDiag[,
+    setdiff(colnames(clinDiag), c("PRIMDIAG", "DFPGDIST")),
+    drop=F
+]
+clinDiag <- decode(clinDiag, c(), codeList)
+colClasses <- c()
+for(cn in colnames(clinDiag)){
+    colClasses <- c(colClasses, class(clinDiag[,cn]))
+}
+names(colClasses) <- colnames(clinDiag)
+if(!all(colnames(clinDiag) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(clinDiag),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "Clinical diagnosis"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, clinDiag)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+```{r, echo=FALSE, message=FALSE}
+primDiag <- primDiag[,
+    setdiff(colnames(primDiag), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+primDiag$PRIMDIAG <- sprintf("%02d", primDiag$PRIMDIAG)
+primDiag$PRIMDIAG <- ifelse(primDiag$PRIMDIAG=="NA", NA, primDiag$PRIMDIAG)
+primDiag <- decode(primDiag, c(), codeList)
+colClasses <- c()
+for(cn in colnames(primDiag)){
+    colClasses <- c(colClasses, class(primDiag[,cn]))
+}
+names(colClasses) <- colnames(primDiag)
+if(!all(colnames(primDiag) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(primDiag),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "Clinical diagnosis"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, primDiag)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Diagnosis features
+
+```{r, echo=FALSE, message=FALSE}
+diagFeat <- diagFeat[,
+    setdiff(colnames(diagFeat), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+diagFeat <- decode(diagFeat, c(), codeList)
+colClasses <- c()
+for(cn in colnames(diagFeat)){
+    colClasses <- c(colClasses, class(diagFeat[,cn]))
+}
+names(colClasses) <- colnames(diagFeat)
+if(!all(colnames(diagFeat) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(diagFeat),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "Diagnosis features"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, diagFeat)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - General neurological exam
+
+```{r, echo=FALSE, message=FALSE}
+neuroExam <- neuroExam[,
+    setdiff(colnames(neuroExam), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+neuroExam <- decode(neuroExam, c(), codeList)
+colClasses <- c()
+for(cn in colnames(neuroExam)){
+    colClasses <- c(colClasses, class(neuroExam[,cn]))
+}
+names(colClasses) <- colnames(neuroExam)
+if(!all(colnames(neuroExam) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(neuroExam),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "General neurological exam"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, neuroExam)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Cranial nerves
+
+```{r, echo=FALSE, message=FALSE}
+cranNerves <- cranNerves[,
+    setdiff(colnames(cranNerves), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+cranNerves <- decode(cranNerves, c(), codeList)
+colClasses <- c()
+for(cn in colnames(cranNerves)){
+    colClasses <- c(colClasses, class(cranNerves[,cn]))
+}
+names(colClasses) <- colnames(cranNerves)
+if(!all(colnames(cranNerves) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(cranNerves),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "Cranial nerves"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, cranNerves)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - PD features
+
+```{r, echo=FALSE, message=FALSE}
+pdFeat <- pdFeat[,
+    setdiff(colnames(pdFeat), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+# pdFeat$DXBRADY <- ifelse(pdFeat$DXBRADY=="3", NA, pdFeat$DXBRADY)
+pdFeat$DOMSIDE <- ifelse(pdFeat$DOMSIDE=="u", NA, pdFeat$DOMSIDE)
+pdFeat <- decode(pdFeat, c(), codeList)
+colClasses <- c()
+for(cn in colnames(pdFeat)){
+    colClasses <- c(colClasses, class(pdFeat[,cn]))
+}
+names(colClasses) <- colnames(pdFeat)
+if(!all(colnames(pdFeat) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(pdFeat),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "PD features"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, pdFeat)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - PD medication
+    (Issue with level of FULNUPDR - `r paramDesc["FULNUPDR", "Description"]`:
+    "N" is not in the code list ==> NA.)
+
+```{r, echo=FALSE, message=FALSE}
+pdMed <- pdMed[,
+    setdiff(colnames(pdMed), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+pdMed$FULNUPDR <- ifelse(pdMed$FULNUPDR=="N", NA, pdMed$FULNUPDR)
+for(med in c("ONLDOPA", "ONDOPAG", "ONOTHER")){
+    pdMed[, med] <- ifelse(is.na(pdMed[, med]), FALSE, TRUE)
+}
+pdMed <- decode(pdMed, c(), codeList)
+colClasses <- c()
+for(cn in colnames(pdMed)){
+    colClasses <- c(colClasses, class(pdMed[,cn]))
+}
+names(colClasses) <- colnames(pdMed)
+if(!all(colnames(pdMed) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(pdMed),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "PD medication"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, pdMed)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Vital signs
+
+```{r, echo=FALSE, message=FALSE}
+vitSign <- vitSign[,
+    setdiff(colnames(vitSign), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+vitSign <- decode(vitSign, c(), codeList)
+colClasses <- c()
+for(cn in colnames(vitSign)){
+    colClasses <- c(colClasses, class(vitSign[,cn]))
+}
+names(colClasses) <- colnames(vitSign)
+if(!all(colnames(vitSign) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(vitSign),]
+docToAdd$Group <- "Medical history"
+docToAdd$"Sub-group" <- "Vital signs"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, vitSign)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- Non-motor data
+
+    - BJLOT
+
+```{r, echo=FALSE, message=FALSE}
+## For checking purpose
+badValList <- list()
+##
+bjlot <- bjlot[,
+    setdiff(
+        colnames(bjlot),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+bjlot <- decode(bjlot, c(), codeList)
+colClasses <- c()
+for(cn in colnames(bjlot)){
+    colClasses <- c(colClasses, class(bjlot[,cn]))
+}
+names(colClasses) <- colnames(bjlot)
+if(!all(colnames(bjlot) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(bjlot),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "BJLOT"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, bjlot)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Cognitive categorization
+    (Issue with level of COGSTATE -
+    `r paramDesc["COGSTATE", "Description"]`:
+    "0" is not in the code list ==> NA.)
+
+```{r, echo=FALSE, message=FALSE}
+cogCat <- cogCat[,
+    setdiff(
+        colnames(cogCat),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+cogCat$COGSTATE <- ifelse(cogCat$COGSTATE=="0", NA, cogCat$COGSTATE)
+# cogCat$COGDXCL <- ifelse(cogCat$COGDXCL=="0", NA, cogCat$COGDXCL)
+cogCat <- decode(cogCat, c(), codeList)
+colClasses <- c()
+for(cn in colnames(cogCat)){
+    colClasses <- c(colClasses, class(cogCat[,cn]))
+}
+names(colClasses) <- colnames(cogCat)
+if(!all(colnames(cogCat) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(cogCat),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "Cognitive categorization"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, cogCat)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - ESS
+
+```{r, echo=FALSE, message=FALSE}
+ess <- ess[,
+    setdiff(
+        colnames(ess),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+ess <- decode(ess, c(), codeList)
+colClasses <- c()
+for(cn in colnames(ess)){
+    colClasses <- c(colClasses, class(ess[,cn]))
+}
+names(colClasses) <- colnames(ess)
+if(!all(colnames(ess) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(ess),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "ESS"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, ess)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - GDS
+
+```{r, echo=FALSE, message=FALSE}
+gds <- gds[,
+    setdiff(
+        colnames(gds),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+gds <- decode(gds, c(), codeList)
+colClasses <- c()
+for(cn in colnames(gds)){
+    colClasses <- c(colClasses, class(gds[,cn]))
+}
+names(colClasses) <- colnames(gds)
+if(!all(colnames(gds) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(gds),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "GDS"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, gds)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - HVLT
+
+```{r, echo=FALSE, message=FALSE}
+hvlt <- hvlt[,
+    setdiff(
+        colnames(hvlt),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+hvlt <- decode(hvlt, c(), codeList)
+colClasses <- c()
+for(cn in colnames(hvlt)){
+    colClasses <- c(colClasses, class(hvlt[,cn]))
+}
+names(colClasses) <- colnames(hvlt)
+if(!all(colnames(hvlt) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(hvlt),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "HVLT"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, hvlt)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - LNS
+
+```{r, echo=FALSE, message=FALSE}
+lns <- lns[,
+    setdiff(
+        colnames(lns),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+lns <- decode(lns, c(), codeList)
+colClasses <- c()
+for(cn in colnames(lns)){
+    colClasses <- c(colClasses, class(lns[,cn]))
+}
+names(colClasses) <- colnames(lns)
+if(!all(colnames(lns) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(lns),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "LNS"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, lns)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - MOCA
+
+```{r, echo=FALSE, message=FALSE}
+moca <- moca[,
+    setdiff(
+        colnames(moca),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+moca <- decode(moca, c(), codeList)
+colClasses <- c()
+for(cn in colnames(moca)){
+    colClasses <- c(colClasses, class(moca[,cn]))
+}
+names(colClasses) <- colnames(moca)
+if(!all(colnames(moca) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(moca),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "MOCA"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, moca)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - QUIP
+
+```{r, echo=FALSE, message=FALSE}
+quip <- quip[,
+    setdiff(
+        colnames(quip),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+quip <- decode(quip, c(), codeList)
+colClasses <- c()
+for(cn in colnames(quip)){
+    colClasses <- c(colClasses, class(quip[,cn]))
+}
+names(colClasses) <- colnames(quip)
+if(!all(colnames(quip) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(quip),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "QUIP"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, quip)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - RBD
+    (Issue with level of DEPRS -
+     `r paramDesc["DEPRS", "Description"]`:
+        "4" is not in the code list ==> NA.)
+
+```{r, echo=FALSE, message=FALSE}
+rbd <- rbd[,
+    setdiff(
+        colnames(rbd),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM", "CNSOTHCM")
+    ),
+    drop=F
+]
+## DEPRS check and REMOVE values which are not in the codeList
+# underReview <- "DEPRS"
+# possVal <- codeList$CODE[which(codeList$ITM_NAME==underReview)]
+# badValues <- which(
+#     !is.na(rbd[,underReview]) &
+#     !rbd[,underReview] %in% naDecode &
+#     !rbd[,underReview] %in% possVal
+# )
+# if(length(badValues)>0){
+#     badValList[[underReview]] <- list(
+#         warning=paste0(
+#             "Bad values for ", underReview, " are moved to NA\n",
+#             "Affected records: ", paste(rownames(rbd)[badValues], collapse=" || "), "\n",
+#             "Valid value for ", underReview, ": ",
+#             paste(possVal, collapse=" || ")    
+#         )
+#     )
+# }
+rbd[which(rbd$DEPRS==4), "DEPRS"] <- NA
+##
+rbd <- decode(rbd, c(), codeList)
+colClasses <- c()
+for(cn in colnames(rbd)){
+    colClasses <- c(colClasses, class(rbd[,cn]))
+}
+names(colClasses) <- colnames(rbd)
+if(!all(colnames(rbd) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(rbd),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "RBD"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, rbd)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - SCOPA-AUT
+
+```{r, echo=FALSE, message=FALSE}
+scopa <- scopa[,
+    setdiff(
+        colnames(scopa),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+scopa <- decode(scopa, c(), codeList)
+colClasses <- c()
+for(cn in colnames(scopa)){
+    colClasses <- c(colClasses, class(scopa[,cn]))
+}
+names(colClasses) <- colnames(scopa)
+if(!all(colnames(scopa) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(scopa),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "SCOPA-AUT"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, scopa)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Semantic fluency
+
+```{r, echo=FALSE, message=FALSE}
+semFlue <- semFlue[,
+    setdiff(
+        colnames(semFlue),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+semFlue <- decode(semFlue, c(), codeList)
+colClasses <- c()
+for(cn in colnames(semFlue)){
+    colClasses <- c(colClasses, class(semFlue[,cn]))
+}
+names(colClasses) <- colnames(semFlue)
+if(!all(colnames(semFlue) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(semFlue),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "Semantic fluency"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, semFlue)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - STA
+
+```{r, echo=FALSE, message=FALSE}
+sta <- sta[,
+    setdiff(
+        colnames(sta),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+sta <- decode(sta, c(), codeList)
+colClasses <- c()
+for(cn in colnames(sta)){
+    colClasses <- c(colClasses, class(sta[,cn]))
+}
+names(colClasses) <- colnames(sta)
+if(!all(colnames(sta) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(sta),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "STA"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, sta)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - SDM
+
+```{r, echo=FALSE, message=FALSE}
+sdm <- sdm[,
+    setdiff(
+        colnames(sdm),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+sdm <- decode(sdm, c(), codeList)
+colClasses <- c()
+for(cn in colnames(sdm)){
+    colClasses <- c(colClasses, class(sdm[,cn]))
+}
+names(colClasses) <- colnames(sdm)
+if(!all(colnames(sdm) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(sdm),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "SDM"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, sdm)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - UPSIT
+
+```{r, echo=FALSE, message=FALSE}
+upsit <- upsit[,
+    setdiff(
+        colnames(upsit),
+        c("PATNO", "EVENT_ID", "INFODT", "PTCGBOTH", "comm", "COMM")
+    ),
+    drop=F
+]
+upsit <- decode(upsit, c(), codeList)
+colClasses <- c()
+for(cn in colnames(upsit)){
+    colClasses <- c(colClasses, class(upsit[,cn]))
+}
+names(colClasses) <- colnames(upsit)
+if(!all(colnames(upsit) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(upsit),]
+docToAdd$Group <- "Non-motor"
+docToAdd$"Sub-group" <- "UPSIT"
+docToAdd$Class <- colClasses
+visitData <- smartBind(visitData, upsit)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+<!-- ```{r, echo=FALSE, message=FALSE} -->
+<!-- for(i in 1:length(badValList)){ -->
+<!--     warning(badValList[[i]]$warning) -->
+<!-- } -->
+<!-- ``` -->
+
+
+- Biological data
+
+    - Biospecimen analyses
+
+```{r, echo=FALSE, message=FALSE}
+bdDoc <- bdDoc[colnames(biospec),]
+colClasses <- c()
+for(cn in colnames(biospec)){
+    colClasses <- c(colClasses, class(biospec[,cn]))
+}
+names(colClasses) <- colnames(biospec)
+docToAdd <- data.frame(
+    Variable=bdDoc$TESTNAME,
+    Description=ifelse(
+        is.na(bdDoc$UNITS),
+        bdDoc$TESTNAME,
+        paste0(bdDoc$TESTNAME, " (", bdDoc$UNITS, ")")
+    ),
+    Group="Biological",
+    "Sub-group"=bdDoc$TYPE,
+    Class=colClasses,
+    stringsAsFactors=F,
+    check.names=F
+)
+visitData <- smartBind(visitData, biospec)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+    - Blood chemistry and hematology
+
+```{r, echo=FALSE, message=FALSE}
+blood <- blood[,
+    setdiff(colnames(blood), c("PATNO", "EVENT_ID", "INFODT")),
+    drop=F
+]
+bcDoc <- bcDoc[colnames(blood),]
+colClasses <- c()
+for(cn in colnames(blood)){
+    colClasses <- c(colClasses, class(blood[,cn]))
+}
+names(colClasses) <- colnames(blood)
+docToAdd <- data.frame(
+    Variable=bcDoc$TESTNAME,
+    Description=bcDoc$TESTNAME,
+    Group="Biological",
+    "Sub-group"=bcDoc$TYPE,
+    Class=colClasses,
+    stringsAsFactors=F,
+    check.names=F
+)
+visitData <- smartBind(visitData, blood)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+# Saving the data
+
+```{r, echo=FALSE, message=FALSE}
+visitInfo <- visitInfo[rownames(visitData),]
+toSave <- c(
+    "dumpDate",
+    "visitDoc", "visitInfo", "scheduledVisits",
+    "varDoc", "patientData", "visitData"
+)
+f <- "PPMI-Parsed.rda"
+save(list=toSave, file=f)
+```
+
+The following objects were saved in the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE, results="asis"}
+cat(paste("*", toSave), sep="\n")
+```
+
+

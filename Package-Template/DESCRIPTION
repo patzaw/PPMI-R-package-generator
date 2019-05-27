@@ -1,0 +1,16 @@
+Package: PPMI
+Title: Package for dealing with PPMI provided data
+Version: 1.0.0
+Author: Patrice Godard
+Maintainer: Patrice Godard <patrice.godard@gmail.com>
+Description: This package provides PPMI data and functions to work with.
+License: TODO
+LazyData: TRUE
+Depends:
+    snpStats
+Suggests:
+    BiocStyle,
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+RoxygenNote: 6.1.1
