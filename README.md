@@ -165,3 +165,15 @@ This script also builds the "PPMI-Data-Usage" vignette using updated data.
 
 After building and installing the PPMI R package, data can be exported in
 an Excel file using the **Data-Summary-Export.Rmd** script.
+
+<!----------------------------------------------------------------------------->
+<!----------------------------------------------------------------------------->
+## Data export in SAS
+
+After building and installing the PPMI R package, data can be exported in
+an SAS XPORT file using the **Export-SAS.R** script. However the function
+from the **SASxport** package (`write.xport()`) used to build this file raises
+several messages about truncated long names. Also in the PPMI R package,
+row names are used to make cross-references between data frames. I don't
+know has row names are exported by **SASxport** and how they are handled by
+SAS itself. CSV files are also produced by this script.
