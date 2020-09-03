@@ -12,6 +12,7 @@ for(n in c("varDoc", "patientData", "visitDoc", "visitInfo", "scheduledVisits", 
       file=sprintf("%s-%s.csv", n, packageDate("PPMI")),
       sep=",",
       row.names=TRUE, col.names=NA,
+      na="",
       quote=T, qmethod="double"
    )
 }
