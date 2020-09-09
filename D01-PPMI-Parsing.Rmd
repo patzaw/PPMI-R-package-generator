@@ -633,6 +633,34 @@ in the *`r mdSan(f)`* file.
 kable(paramDesc[which(paramDesc$ITM_NAME %in% colnames(geneRes)),], row.names=F)
 ```
 
+### PD Variants WGS
+
+```{r, echo=FALSE, message=FALSE}
+f <- "PPMI_PD_Variants_Genetic_Status_WGS_20180921.csv"
+pdVar <- unique(readPpmiTable(f))
+takenFiles <- unique(c(takenFiles, f))
+rownames(pdVar) <- pdVar$PATNO
+pdVar <- pdVar[,setdiff(colnames(pdVar), "PATNO")]
+descToAdd <- data.frame(
+  "ITM_NAME"=colnames(pdVar),
+  "DSCR"="Number of copies of the minor allele",
+  stringsAsFactors=FALSE
+)
+rownames(descToAdd) <- descToAdd$ITM_NAME
+paramDesc <- rbind(
+  paramDesc,
+  descToAdd
+)
+```
+
+Genotypes of PD variants from whole genome sequencing data are available
+in the *`r mdSan(f)`* file.
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[which(paramDesc$ITM_NAME %in% colnames(pdVar)),], row.names=F)
+```
+
+
 <!-------------------------------------------------->
 <!-------------------------------------------------->
 
@@ -3935,6 +3963,25 @@ docToAdd$Group <- "Patient"
 docToAdd$"Sub-group" <- "Genetic testing results"
 docToAdd$Class <- colClasses
 patientData <- smartBind(patientData, geneRes)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- PD variants
+
+```{r, echo=FALSE, message=FALSE}
+colClasses <- c()
+for(cn in colnames(pdVar)){
+    colClasses <- c(colClasses, class(pdVar[,cn]))
+}
+names(colClasses) <- colnames(pdVar)
+if(!all(colnames(pdVar) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(pdVar),]
+docToAdd$Group <- "Patient"
+docToAdd$"Sub-group" <- "PD variants"
+docToAdd$Class <- colClasses
+patientData <- smartBind(patientData, pdVar)
 varDoc <- rbind(varDoc, docToAdd)
 ```
 
