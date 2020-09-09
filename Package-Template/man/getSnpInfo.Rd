@@ -9,6 +9,10 @@ getSnpInfo(snps)
 \arguments{
 \item{snps}{a character vector of SNP IDs}
 }
+\value{
+a data.frame with SNP information. ID which were not found
+are available in the 'Not found' attribute (\code{attr(toRet, "Not found")}).
+}
 \description{
 Get information about PPMI SNPs
 }

@@ -15,6 +15,7 @@ getSnps <- function(snps, transcode=FALSE){
         stop("Could not find any SNP among those provided.")
     }
     selection <- as(PPMI::snpData[,snps], "character")
+    selection <- ifelse(selection=="NA", NA, selection)
     if(transcode){
         snpInfo <- PPMI::snpInfo
         toRet <- c()
@@ -29,7 +30,11 @@ getSnps <- function(snps, transcode=FALSE){
                     ifelse(
                         selection[,snp]=="A/B",
                         paste(a1, a2, sep="/"),
-                        paste(a2, a2, sep="/")
+                        ifelse(
+                            selection[,snp]=="B/B",
+                            paste(a2, a2, sep="/"),
+                            NA
+                        )
                     )
                 )
             )

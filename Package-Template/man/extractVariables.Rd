@@ -4,8 +4,13 @@
 \alias{extractVariables}
 \title{Extract variable values for a set of patients and a set of events.}
 \usage{
-extractVariables(patients, variables, events = NA, snps = NULL,
-  transcode = FALSE)
+extractVariables(
+  patients,
+  variables,
+  events = NA,
+  snps = NULL,
+  transcode = FALSE
+)
 }
 \arguments{
 \item{patients}{the patients IDs to focus on.}

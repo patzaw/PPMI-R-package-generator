@@ -94,7 +94,7 @@ plinkRegression <- function(
                 sub("[.]bed$", "", system.file(
                     package=pckName,
                     "extdata", "Genotyping",
-                    "ImmunoNeurox-GRCh37-Filtered.bed"
+                    "ImmunoNeurox-GRCh37.bed"
                 )),
                 "--pheno", "tmpPheno.txt", "--mpheno 1",
                 ifelse(
@@ -123,7 +123,7 @@ plinkRegression <- function(
                 sub("[.]bed$", "", system.file(
                     package=pckName,
                     "extdata", "Genotyping",
-                    "ImmunoNeurox-GRCh37-Filtered.bed"
+                    "ImmunoNeurox-GRCh37.bed"
                 )),
                 "--set-test --set tmpSet.txt",
                 "--pheno", "tmpPheno.txt", "--mpheno 1",

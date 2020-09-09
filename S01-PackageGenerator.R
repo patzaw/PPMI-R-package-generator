@@ -39,7 +39,7 @@ dir.create(genoPckDir, recursive=TRUE)
 toCopy <- file.path(
     genoOriDir,
     paste(
-        "ImmunoNeurox-GRCh37-Filtered",
+        "ImmunoNeurox-GRCh37",
         c("bed", "bim", "fam"),
         sep="."
     )
@@ -49,7 +49,7 @@ for(f in toCopy){
 }
 curDir <- getwd()
 setwd(genoOriDir)
-genPref <- "ImmunoNeurox-GRCh37-Filtered"
+genPref <- "ImmunoNeurox-GRCh37"
 plinkImport <- read.plink(
     bed=paste0(genPref, ".bed"),
     bim=paste0(genPref, ".bim"),
@@ -70,4 +70,5 @@ try(detach("package:PPMI", unload=T))
 try(remove.packages("PPMI"))
 install.packages(pckDir, repos=NULL)
 devtools::build_vignettes(pckDir)
+file.rename(file.path(pckDir, "doc"), file.path(pckDir, "inst", "doc"))
 install.packages(pckDir, repos=NULL)

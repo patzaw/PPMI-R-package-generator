@@ -34,7 +34,7 @@ rm(null)
 library(knitr)
 library(beeswarm)
 library(RColorBrewer)
-dumpDir <- "~/Shared/Data-Science/PPMI/Data/Data-2019-02-06"
+dumpDir <- "~/Shared/Data-Science/PPMI/Data/Data-2020-09-03/"
 dumpDate <- as.Date(sub("Data-", "", basename(dumpDir)))
 #######
 readPpmiTable <- function(f){
@@ -540,6 +540,99 @@ PD history in subject family is available in the *`r mdSan(f)`* file.
 kable(paramDesc[which(paramDesc$ITM_NAME %in% colnames(pdHist)),], row.names=F)
 ```
 
+### Genetics cohorts
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Genetic_Testing_Results.csv"
+tmp <- unique(readPpmiTable(f))
+takenFiles <- unique(c(takenFiles, f))
+tmp <- tmp[
+   ,
+   setdiff(
+      colnames(tmp),
+      c(
+         "EVENT_ID", "INFODT",
+         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
+         "QUERY"
+         )
+      )
+   ]
+naDecode <- c()
+resByMut <- decode(tmp, "PATNO", codeList)
+resByMut <- unique(resByMut)
+resByMut$GENECAT <- as.character(resByMut$GENECAT)
+resByMut$LRRKCD <- as.character(resByMut$LRRKCD)
+resByMut$MUTRSLT <- resByMut$MUTRSLT=="Positive"
+resByMut$MUTCAT <- ifelse(
+  resByMut$GENECAT=="LRRK2",
+  paste(
+    resByMut$GENECAT,
+    ifelse(is.na(resByMut$LRRKCD), "other", resByMut$LRRKCD),
+    sep="_"
+  ),
+  resByMut$GENECAT
+)
+resByMut <- dplyr::group_by(resByMut, PATNO, MUTCAT)
+resByMut <- dplyr::mutate(
+  resByMut,
+  MUTRSLT=ifelse(length(unique(MUTRSLT))==1, MUTRSLT, NA)
+)
+resByMut <- unique(resByMut)
+resByGene <- dplyr::group_by(resByMut, PATNO, GENECAT)
+resByGene <- dplyr::mutate(
+  resByGene,
+  MUTRSLT=any(MUTRSLT),
+  MUTCAT=GENECAT
+)
+resByGene <- unique(dplyr::ungroup(
+  resByGene[which(resByGene$MUTCAT=="LRRK2"), c("PATNO", "MUTCAT", "MUTRSLT")]
+))
+resByMut <- dplyr::ungroup(resByMut[,c("PATNO", "MUTCAT", "MUTRSLT")])
+geneRes <- tidyr::pivot_wider(
+  rbind(resByMut, resByGene),
+  values_from=MUTRSLT,
+  names_from=MUTCAT
+)
+geneRes <- as.data.frame(geneRes)
+rownames(geneRes) <- geneRes$PATNO
+geneRes <- geneRes[,setdiff(colnames(geneRes), "PATNO")]
+descToAdd <- c(
+  "LRRK2_G2019S", "Glycine to serine substitution in LRRK2",
+  "LRRK2_R1441G", "Arginine to glycine substitution in LRRK2",
+  "LRRK2_other", "Other mutation in LRRK2",
+  "SNCA", "Mutation in SNCA",
+  "GBA", "Mutation in GBA",
+  "LRRK2", "Mutation in LRRK2"
+)
+descToAdd <- as.data.frame(
+  matrix(
+    descToAdd, ncol=2, byrow=TRUE,
+    dimnames=list(
+      descToAdd[seq(1, length(descToAdd), by=2)],
+      c("ITM_NAME", "DSCR")
+    )
+  ),
+  stringsAsFactors=FALSE
+)
+stopifnot(
+  all(rownames(descToAdd) %in% colnames(geneRes)),
+  all(colnames(geneRes) %in% rownames(descToAdd)),
+  !any(rownames(descToAdd) %in% rownames(paramDesc))
+)
+paramDesc <- rbind(
+  paramDesc,
+  descToAdd
+)
+```
+
+Genetic testing results for the genetic cohort are available
+in the *`r mdSan(f)`* file.
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[which(paramDesc$ITM_NAME %in% colnames(geneRes)),], row.names=F)
+```
+
 <!-------------------------------------------------->
 <!-------------------------------------------------->
 
@@ -550,7 +643,7 @@ dataList <- c(
     list(
         patient=c(
             "cohorts", "demog", "socioEco",
-            "pdHist"
+            "pdHist", "geneRes"
         )
     )
 )
@@ -590,13 +683,14 @@ takenFiles <- unique(c(takenFiles, f))
 
 ```{r, echo=FALSE, message=FALSE}
 datScan <- datScanInt
-datScan <- cbind(
-   datScan,
-   "INFODT"=as.Date(
-      paste("01/", datScanInfo[rownames(datScan),"INFODT"], sep=""),
-      "%d/%m/%Y"
-   )
-)
+colnames(datScan) <- sub("^SCAN_DATE$", "INFODT", colnames(datScan))
+# datScan <- cbind(
+#    datScan,
+#    "INFODT"=as.Date(
+#       paste("01/", datScanInfo[rownames(datScan),"INFODT"], sep=""),
+#       "%d/%m/%Y"
+#    )
+# )
 ```
 
 Number of subjects with DaTScan values at each [visit](#visitInfo):
@@ -634,7 +728,7 @@ magRes <- magRes[
       colnames(magRes),
       c(
          "MRICMPLT", "MRIDT", "MRIWDTI", "MRIWRSS",
-         "MRIXFRYN", "COMM"
+         "MRIXFRYN", "COMM", "PDMEDTM"
          )
       )
    ]
@@ -891,8 +985,15 @@ medication.
 #### Before treatment
 
 ```{r, echo=FALSE, message=FALSE}
-updrs3.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
-dupPatEv <- updrs3.pre[which(duplicated(updrs3.pre[,1:2])), 1:2]
+# updrs3.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
+updrs3.pre <- tmp[
+  which(is.na(tmp$PD_MED_USE) | tmp$PD_MED_USE==0 | tmp$ON_OFF_DOSE==1),
+]
+updrs3.pre <- unique(updrs3.pre[, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)])
+dupPatEv <- updrs3.pre[
+  which(duplicated(updrs3.pre[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
 if(nrow(dupPatEv)==0){
     stop("No duplicated rows ==> review this section!")
 }
@@ -959,15 +1060,87 @@ kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
 #### After treatment
 
 ```{r, echo=FALSE, message=FALSE}
-updrs3.post <- tmp[which(!is.na(tmp$CMEDTM)),]
-dupPatEv <- updrs3.post[which(duplicated(updrs3.post[,1:2])), 1:2]
-if(nrow(dupPatEv)!=0){
-    stop("Duplicated rows ==> review this section!")
-}
-updrs3.post <- updrs3.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)]
-rownames(updrs3.post) <- paste(
-    updrs3.post$PATNO, updrs3.post$EVENT_ID, sep="."
+# updrs3.post <- tmp[which(!is.na(tmp$CMEDTM)),]
+updrs3.post <- tmp[
+  which(
+    !is.na(tmp$PD_MED_USE) & tmp$PD_MED_USE!=0 & tmp$ON_OFF_DOSE==2
+  ),
+]
+toAdd <- tmp[
+  which(
+    !is.na(tmp$PD_MED_USE) & tmp$PD_MED_USE!=0 & is.na(tmp$ON_OFF_DOSE)
+  ),
+]
+toAdd <- toAdd[
+  which(
+    !paste(toAdd$PATNO, toAdd$EVENT_ID) %in%
+      paste(updrs3.post$PATNO, updrs3.post$EVENT_ID)
+  ),
+]
+updrs3.post <- rbind(updrs3.post, toAdd)
+updrs3.post <- unique(
+  updrs3.post[, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)]
 )
+dupPatEv <- updrs3.post[
+  which(duplicated(updrs3.post[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
+# if(nrow(dupPatEv)!=0){
+#     stop("Duplicated rows ==> review this section!")
+# }
+# updrs3.post <- updrs3.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)]
+# rownames(updrs3.post) <- paste(
+#     updrs3.post$PATNO, updrs3.post$EVENT_ID, sep="."
+# )
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking average values.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dupRows <- unlist(apply(
+    dupPatEv,
+    1,
+    function(x){
+        list(which(
+            updrs3.post$PATNO==as.numeric(x[1]) & updrs3.post$EVENT_ID==x[2]
+        ))
+    }
+))
+toAggr <- updrs3.post[dupRows, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    paste(toAggr$PATNO, toAggr$EVENT_ID, sep="."),
+    function(d){
+        toRet <- data.frame(
+            "PATNO"=d[1,"PATNO"],
+            "EVENT_ID"=d[1,"EVENT_ID"],
+            "INFODT"=d[1,"INFODT"],
+            stringsAsFactors=F
+        )
+        toAdd <- apply(
+            d[,updrs3Col],
+            2,
+            function(x){
+                round(mean(x, na.rm=T))
+            }
+        )
+        toRet <- cbind(toRet, t(toAdd))
+        return(toRet)
+    }
+))
+updrs3.post <- rbind(
+    updrs3.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", updrs3Col)],
+    toAggr
+)
+rownames(updrs3.post) <- paste(updrs3.post$PATNO, updrs3.post$EVENT_ID, sep=".")
 ```
 
 Number of subjects with UPDRS3 (post-treatment) data at
@@ -1066,8 +1239,15 @@ medication.
 #### Before treatment
 
 ```{r, echo=FALSE, message=FALSE}
-updrs5.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
-dupPatEv <- updrs5.pre[which(duplicated(updrs5.pre[,1:2])), 1:2]
+# updrs5.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
+updrs5.pre <- tmp[
+  which(is.na(tmp$PD_MED_USE) | tmp$PD_MED_USE==0 | tmp$ON_OFF_DOSE==1),
+]
+updrs5.pre <- unique(updrs5.pre[, c("PATNO", "EVENT_ID", "INFODT", "NHY")])
+dupPatEv <- updrs5.pre[
+  which(duplicated(updrs5.pre[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
 if(nrow(dupPatEv)==0){
     stop("No duplicated rows ==> review this section!")
 }
@@ -1134,15 +1314,85 @@ kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
 #### After treatment
 
 ```{r, echo=FALSE, message=FALSE}
-updrs5.post <- tmp[which(!is.na(tmp$CMEDTM)),]
-dupPatEv <- updrs5.post[which(duplicated(updrs5.post[,1:2])), 1:2]
-if(nrow(dupPatEv)!=0){
-    stop("Duplicated rows ==> review this section!")
+# updrs5.post <- tmp[which(!is.na(tmp$CMEDTM)),]
+updrs5.post <- tmp[
+  which(
+    !is.na(tmp$PD_MED_USE) & tmp$PD_MED_USE!=0 & tmp$ON_OFF_DOSE==2
+  ),
+]
+toAdd <- tmp[
+  which(
+    !is.na(tmp$PD_MED_USE) & tmp$PD_MED_USE!=0 & is.na(tmp$ON_OFF_DOSE)
+  ),
+]
+toAdd <- toAdd[
+  which(
+    !paste(toAdd$PATNO, toAdd$EVENT_ID) %in%
+      paste(updrs5.post$PATNO, updrs5.post$EVENT_ID)
+  ),
+]
+updrs5.post <- rbind(updrs5.post, toAdd)
+updrs5.post <- unique(updrs5.post[, c("PATNO", "EVENT_ID", "INFODT", "NHY")])
+dupPatEv <- updrs5.post[
+  which(duplicated(updrs5.post[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
+# if(nrow(dupPatEv)!=0){
+#     stop("Duplicated rows ==> review this section!")
+# }
+# updrs5.post <- updrs5.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", "NHY")]
+# rownames(updrs5.post) <- paste(
+#     updrs5.post$PATNO, updrs5.post$EVENT_ID, sep="."
+# )
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
 }
-updrs5.post <- updrs5.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", "NHY")]
-rownames(updrs5.post) <- paste(
-    updrs5.post$PATNO, updrs5.post$EVENT_ID, sep="."
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking average values.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dupRows <- unlist(apply(
+    dupPatEv,
+    1,
+    function(x){
+        list(which(
+            updrs5.post$PATNO==as.numeric(x[1]) & updrs5.post$EVENT_ID==x[2]
+        ))
+    }
+))
+toAggr <- updrs5.post[dupRows, c("PATNO", "EVENT_ID", "INFODT", "NHY")]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    paste(toAggr$PATNO, toAggr$EVENT_ID, sep="."),
+    function(d){
+        toRet <- data.frame(
+            "PATNO"=d[1,"PATNO"],
+            "EVENT_ID"=d[1,"EVENT_ID"],
+            "INFODT"=d[1,"INFODT"],
+            stringsAsFactors=F
+        )
+        toAdd <- apply(
+            d[,"NHY", drop=F],
+            2,
+            function(x){
+                round(mean(x, na.rm=T))
+            }
+        )
+        toRet <- cbind(toRet, t(toAdd))
+        return(toRet)
+    }
+))
+updrs5.post <- rbind(
+    updrs5.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", "NHY")],
+    toAggr
 )
+rownames(updrs5.post) <- paste(updrs5.post$PATNO, updrs5.post$EVENT_ID, sep=".")
 ```
 
 Number of subjects with UPDRS5 (post-treatment) data at
@@ -1248,15 +1498,23 @@ medication.
 #### Before treatment
 
 ```{r, echo=FALSE, message=FALSE}
-dyskDoc.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
-dupPatEv <- dyskDoc.pre[which(duplicated(dyskDoc.pre[,1:2])), 1:2]
+# dyskDoc.pre <- tmp[which(is.na(tmp$CMEDTM) & is.na(tmp$EXAMTM)),]
+dyskDoc.pre <- tmp[
+  which(is.na(tmp$PD_MED_USE) | tmp$PD_MED_USE==0 | tmp$ON_OFF_DOSE==1),
+]
+dyskDoc.pre <- unique(dyskDoc.pre[,c("PATNO", "EVENT_ID", "INFODT", dyskCol)])
+dupPatEv <- dyskDoc.pre[
+  which(duplicated(dyskDoc.pre[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
 if(nrow(dupPatEv)==0){
     stop("No duplicated rows ==> review this section!")
 }
 ```
 
 Conflicting data for the `r nrow(dupPatEv)` following records were
-aggregated by taking average values.
+aggregated by taking the average value of ANNUAL_TIME_BTW_DOSE_NUPDRS
+and unambiguous values for other parameters.
 
 ```{r, echo=FALSE, message=FALSE}
 kable(dupPatEv, row.names=F)
@@ -1283,14 +1541,21 @@ toAggr <- do.call(rbind, by(
             "INFODT"=d[1,"INFODT"],
             stringsAsFactors=F
         )
-        toAdd <- apply(
-            d[,dyskCol],
-            2,
-            function(x){
-                round(mean(x, na.rm=T))
-            }
-        )
-        toRet <- cbind(toRet, t(toAdd))
+        toAdd <- unique(d[,"DYSKPRES"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"DYSKPRES"] <-toAdd
+        toAdd <- unique(d[,"DYSKIRAT"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"DYSKIRAT"] <-toAdd
+        toAdd <- mean(d[,"ANNUAL_TIME_BTW_DOSE_NUPDRS"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"ANNUAL_TIME_BTW_DOSE_NUPDRS"] <-toAdd
+        toAdd <- unique(d[,"ON_OFF_DOSE"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"ON_OFF_DOSE"] <-toAdd
+        toAdd <- unique(d[,"PD_MED_USE"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"PD_MED_USE"] <-toAdd
         return(toRet)
     }
 ))
@@ -1318,12 +1583,91 @@ kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
 #### After treatment
 
 ```{r, echo=FALSE, message=FALSE}
-dyskDoc.post <- tmp[which(!is.na(tmp$CMEDTM)),]
-dupPatEv <- dyskDoc.post[which(duplicated(dyskDoc.post[,1:2])), 1:2]
-if(nrow(dupPatEv)!=0){
-    stop("Duplicated rows ==> review this section!")
+# dyskDoc.post <- tmp[which(!is.na(tmp$CMEDTM)),]
+dyskDoc.post <- tmp[
+  which(
+    !is.na(tmp$PD_MED_USE) & tmp$PD_MED_USE!=0 & tmp$ON_OFF_DOSE==2
+  ),
+]
+toAdd <- tmp[
+  which(
+    !is.na(tmp$PD_MED_USE) & tmp$PD_MED_USE!=0 & is.na(tmp$ON_OFF_DOSE)
+  ),
+]
+toAdd <- toAdd[
+  which(
+    !paste(toAdd$PATNO, toAdd$EVENT_ID) %in%
+      paste(dyskDoc.post$PATNO, dyskDoc.post$EVENT_ID)
+  ),
+]
+dyskDoc.post <- rbind(dyskDoc.post, toAdd)
+dyskDoc.post <- unique(dyskDoc.post[,c("PATNO", "EVENT_ID", "INFODT", dyskCol)])
+dupPatEv <- dyskDoc.post[
+  which(duplicated(dyskDoc.post[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
+# if(nrow(dupPatEv)!=0){
+#     stop("Duplicated rows ==> review this section!")
+# }
+# dyskDoc.post <- dyskDoc.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", dyskCol)]
+# rownames(dyskDoc.post) <- paste(
+#     dyskDoc.post$PATNO, dyskDoc.post$EVENT_ID, sep="."
+# )
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
 }
-dyskDoc.post <- dyskDoc.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", dyskCol)]
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking average values.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dupRows <- unlist(apply(
+    dupPatEv,
+    1,
+    function(x){
+        list(which(
+            dyskDoc.post$PATNO==as.numeric(x[1]) & dyskDoc.post$EVENT_ID==x[2]
+        ))
+    }
+))
+toAggr <- dyskDoc.post[dupRows, c("PATNO", "EVENT_ID", "INFODT", dyskCol)]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    paste(toAggr$PATNO, toAggr$EVENT_ID, sep="."),
+    function(d){
+        toRet <- data.frame(
+            "PATNO"=d[1,"PATNO"],
+            "EVENT_ID"=d[1,"EVENT_ID"],
+            "INFODT"=d[1,"INFODT"],
+            stringsAsFactors=F
+        )
+        toAdd <- unique(d[,"DYSKPRES"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"DYSKPRES"] <-toAdd
+        toAdd <- unique(d[,"DYSKIRAT"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"DYSKIRAT"] <-toAdd
+        toAdd <- mean(d[,"ANNUAL_TIME_BTW_DOSE_NUPDRS"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"ANNUAL_TIME_BTW_DOSE_NUPDRS"] <-toAdd
+        toAdd <- unique(d[,"ON_OFF_DOSE"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"ON_OFF_DOSE"] <-toAdd
+        toAdd <- unique(d[,"PD_MED_USE"])
+        if(length(toAdd)!=1) toAdd <- NA
+        toRet[,"PD_MED_USE"] <-toAdd
+        return(toRet)
+    }
+))
+dyskDoc.post <- rbind(
+    dyskDoc.post[-dupRows, c("PATNO", "EVENT_ID", "INFODT", dyskCol)],
+    toAggr
+)
 rownames(dyskDoc.post) <- paste(
     dyskDoc.post$PATNO, dyskDoc.post$EVENT_ID, sep="."
 )
@@ -1681,6 +2025,7 @@ primDiag <- primDiag[
          )
       )
    ]
+primDiag <- unique(primDiag)
 rownames(primDiag) <- paste(primDiag$PATNO, primDiag$EVENT_ID, sep=".")
 primDiag[, "INFODT"] <- as.Date(
    paste("01/", primDiag[,"INFODT"], sep=""),
@@ -1804,7 +2149,9 @@ neuroExam <- neuroExam[
    setdiff(
       colnames(neuroExam),
       c(
-         "ORIG_ENTRY", "LAST_UPDATE", "QUERY", "REC_ID",
+         "ORIG_ENTRY",
+         "LAST_UPDATE",
+         "QUERY", "REC_ID",
          "SITE_APRV", "F_STATUS", "PAG_NAME", "NUPSOURC",
          "QUERY"
          )
@@ -1820,6 +2167,25 @@ neuroExam[, "INFODT"] <- as.Date(
    "%d/%m/%Y"
    )
 neuroExam <- unique(neuroExam)
+dupPatEv <- neuroExam[
+  which(duplicated(neuroExam[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking the most recent value.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+neuroExam <- neuroExam[order(neuroExam$INFODT, decreasing=T),]
+neuroExam <- neuroExam[which(!duplicated(neuroExam[,c("PATNO", "EVENT_ID")])),]
 rownames(neuroExam) <- paste(neuroExam$PATNO, neuroExam$EVENT_ID, sep=".")
 takenFiles <- unique(c(takenFiles, f))
 ```
@@ -1872,14 +2238,26 @@ cranNerves[, "INFODT"] <- as.Date(
    "%d/%m/%Y"
    )
 cranNerves <- unique(cranNerves)
+dupPatEv <- cranNerves[
+  which(duplicated(cranNerves[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking the most recent value.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+cranNerves <- cranNerves[order(cranNerves$INFODT, decreasing=T),]
+cranNerves <- cranNerves[which(!duplicated(cranNerves[,c("PATNO", "EVENT_ID")])),]
 rownames(cranNerves) <- paste(cranNerves$PATNO, cranNerves$EVENT_ID, sep=".")
-# for(cn in grep(
-#         "CM$",
-#         setdiff(colnames(cranNerves), c("PATNO", "EVENT_ID", "INFODT")),
-#         invert=T, value=T
-# )){
-#     cranNerves[,cn] <- as.logical(cranNerves[,cn])
-# }
 takenFiles <- unique(c(takenFiles, f))
 ```
 
@@ -2015,7 +2393,55 @@ pdMed[, "INFODT"] <- as.Date(
    paste("01/", pdMed[,"INFODT"], sep=""),
    "%d/%m/%Y"
    )
-rownames(pdMed) <- paste(pdMed$PATNO, pdMed$EVENT_ID, sep=".")
+dupPatEv <- pdMed[
+  which(duplicated(pdMed[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by merging identical values or keeping non-missing values.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+dupRows <- unlist(apply(
+    dupPatEv,
+    1,
+    function(x){
+        list(which(
+            pdMed$PATNO==as.numeric(x[1]) & pdMed$EVENT_ID==x[2]
+        ))
+    }
+))
+toAggr <- pdMed[dupRows,]
+toAggr <- do.call(rbind, by(
+    toAggr,
+    paste(toAggr$PATNO, toAggr$EVENT_ID, sep="."),
+    function(d){
+      toRet <- d[1, c("PATNO", "EVENT_ID", "INFODT")]
+      for(cn in colnames(d)){
+        toAdd <- setdiff(d[,cn, drop=TRUE], NA)
+        if(length(toAdd)==0) toAdd <- NA
+        if(length(toAdd)>1) stop("Ambiguous values")
+        class(toAdd) <- class(d[,cn, drop=TRUE])
+        toRet[,cn] <- toAdd
+      }
+      return(toRet)
+    }
+))
+pdMed <- rbind(
+    pdMed[-dupRows, ],
+    toAggr
+)
+rownames(pdMed) <- paste(
+    pdMed$PATNO, pdMed$EVENT_ID, sep="."
+)
 # cn <- "PDMEDYN"
 # tmp[,cn] <- ifelse(tmp[,cn]==0, F, ifelse(tmp[,cn]==1, T, NA))
 # for(cn in setdiff(colnames(tmp), c("PATNO", "EVENT_ID", "INFODT", "PDMEDYN"))){
@@ -2503,7 +2929,6 @@ kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
 ```{r, echo=FALSE, message=FALSE}
 f <- "Montreal_Cognitive_Assessment__MoCA_.csv"
 moca <- readPpmiTable(f)
-takenFiles <- unique(c(takenFiles, f))
 moca <- moca[
    ,
    setdiff(
@@ -2516,11 +2941,36 @@ moca <- moca[
       )
    ]
 moca <- unique(moca)
-rownames(moca) <- paste(moca$PATNO, moca$EVENT_ID, sep=".")
+dupPatEv <- moca[
+  which(duplicated(moca[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
 moca[, "INFODT"] <- as.Date(
    paste("01/", moca[,"INFODT"], sep=""),
    "%d/%m/%Y"
    )
+
+dupPatEv <- moca[
+  which(duplicated(moca[,c("PATNO", "EVENT_ID")])),
+  c("PATNO", "EVENT_ID")
+]
+if(nrow(dupPatEv)==0){
+    stop("No duplicated rows ==> review this section!")
+}
+```
+
+Conflicting data for the `r nrow(dupPatEv)` following records were
+aggregated by taking the most recent value.
+
+```{r, echo=FALSE, message=FALSE}
+kable(dupPatEv, row.names=F)
+```
+
+```{r, echo=FALSE, message=FALSE}
+moca <- moca[order(moca$INFODT, decreasing=T),]
+moca <- moca[which(!duplicated(moca[,c("PATNO", "EVENT_ID")])),]
+rownames(moca) <- paste(moca$PATNO, moca$EVENT_ID, sep=".")
+takenFiles <- unique(c(takenFiles, f))
 ```
 
 Results to the Montreal cognitive assessment test are available in
@@ -2771,7 +3221,7 @@ toplot <- merge(
 kable(table(toplot[,c("ENROLL_CAT", "EVENT_ID")]), rownames="Cohort")
 ```
 
-### State-Trait anxiety (STA)
+### State-Trait anxiety Inventory (STAI)
 
 ```{r, echo=FALSE, message=FALSE}
 f <- "State-Trait_Anxiety_Inventory.csv"
@@ -3061,17 +3511,32 @@ if(length(allDupId)>0){
 
 ```{r, echo=FALSE, message=FALSE}
 ## Factors: columns with no units; remove SCORE from Factors
-factCol <- setdiff(unique(tmp$TESTNAME[which(is.na(tmp$UNITS))]), "SCORE")
-for(cn in factCol) tmpVal[, cn] <- as.factor(tmpVal[, cn])
+factCol <- setdiff(unique(
+  tmp$TESTNAME[which(is.na(tmp$UNITS) | tmp$UNITS %in% c("n.a.", "genotype"))]
+), c("SCORE", "IgG3/IgG", "GRS"))
+for(cn in factCol){
+  convVal <- tmpVal[, cn]
+  convVal <- ifelse(
+    convVal %in% c(
+      "-", "Inconclusive", "NotAssessed"
+    ),
+    NA,
+    convVal
+  )
+  tmpVal[, cn] <- as.factor(convVal)
+}
 numCol <- setdiff(colnames(tmpVal), factCol)
 for(cn in numCol){
 	convVal <- as.character(tmpVal[,cn])
+  convVal <- sub(" *[+][/][-].*", "", convVal)
 	convVal <- ifelse(convVal=="below detection limit", 0, convVal)
 	convVal <- ifelse(convVal=="below", 0, convVal)
 	convVal[grep("<", convVal)] <- 0
 	convVal[grep(">", convVal)] <- "Inf"
 	convVal[grep("above", convVal, ignore.case = T)] <- "Inf"
-	convVal[which(convVal %in% c("Undetermined", "N/A"))] <- NA
+	convVal[which(
+	  convVal %in% c("Undetermined", "N/A", "-", "insufficient volume")
+	)] <- NA
 	tmpVal[, cn] <- as.numeric(convVal)
 }
 ```
@@ -3261,13 +3726,36 @@ dataList <- c(
 ### Data files taken into account
 
 ```{r, echo=FALSE, message=FALSE}
-takenFiles
+sort(takenFiles)
 ```
 
 ### Ignored data files
 
+#### FOUND
+
 ```{r, echo=FALSE, message=FALSE}
-setdiff(availableFiles, takenFiles)
+foundCsv <- grep(".*FOUND.*[.]csv$", availableFiles, value=T, invert=FALSE)
+sort(foundCsv)
+```
+
+#### Collection files
+
+```{r, echo=FALSE, message=FALSE}
+colCsv <- grep(
+  ".*collection.*[.]csv$", availableFiles,
+  value=T, invert=FALSE, ignore.case=TRUE
+)
+sort(colCsv)
+```
+
+
+#### Others
+
+```{r, echo=FALSE, message=FALSE}
+sort(setdiff(
+  grep("[.]csv$", availableFiles, value=T, invert=FALSE),
+  c(takenFiles, foundCsv, colCsv)
+))
 ```
 
 ### Documentation files
@@ -3280,17 +3768,25 @@ gendoc <- c(
     grep("PPMI_Derived_Variable", availableFiles, value=T),
     "PPMI_Datasets_Overview.xlsx"
 )
-gendoc
+sort(gendoc)
 ```
 
+- **Methods**
+
+```{r, echo=FALSE, message=FALSE}
+methDoc <- c(
+    grep("method", availableFiles, value=T, ignore.case=T)
+)
+sort(methDoc)
+```
 
 - **Other documentation**
 
 ```{r, echo=FALSE, message=FALSE}
-setdiff(
+sort(setdiff(
     grep("[.]csv$", availableFiles, value=T, invert=T),
-    gendoc
-)
+    c(gendoc, methDoc)
+))
 ```
 
 <!-------------------------------------------------->
@@ -3420,6 +3916,25 @@ docToAdd$Group <- "Patient"
 docToAdd$"Sub-group" <- "PD history"
 docToAdd$Class <- colClasses
 patientData <- smartBind(patientData, pdHist)
+varDoc <- rbind(varDoc, docToAdd)
+```
+
+- Genetic information for the genetic cohorts
+
+```{r, echo=FALSE, message=FALSE}
+colClasses <- c()
+for(cn in colnames(geneRes)){
+    colClasses <- c(colClasses, class(geneRes[,cn]))
+}
+names(colClasses) <- colnames(geneRes)
+if(!all(colnames(geneRes) %in% rownames(paramDesc))){
+    stop("Missing variable description")
+}
+docToAdd <- paramDesc[colnames(geneRes),]
+docToAdd$Group <- "Patient"
+docToAdd$"Sub-group" <- "Genetic testing results"
+docToAdd$Class <- colClasses
+patientData <- smartBind(patientData, geneRes)
 varDoc <- rbind(varDoc, docToAdd)
 ```
 

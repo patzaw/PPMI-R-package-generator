@@ -4,8 +4,13 @@
 \alias{plinkRegression}
 \title{Call the plink program to test association of a phenotype to SNPs}
 \usage{
-plinkRegression(phenoTable, snpSets = NULL, mperm = 1000,
-  type = c("logistic", "linear"), command = "plink --noweb")
+plinkRegression(
+  phenoTable,
+  snpSets = NULL,
+  mperm = 1000,
+  type = c("logistic", "linear"),
+  command = "plink --noweb"
+)
 }
 \arguments{
 \item{phenoTable}{a data.frame with the first column corresponding

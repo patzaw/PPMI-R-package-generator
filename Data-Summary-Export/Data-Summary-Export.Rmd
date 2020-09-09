@@ -356,8 +356,33 @@ the *`r xs.varDoc`* spreadsheet of the [`r xf`](`r xf`) file.
 <!-------------------------------------------------->
 
 ```{r, echo=FALSE, message=FALSE}
-## Final xlsx export
+## Duplicated lower case column names
 varDocExport <- merge(varDocExport.p, varDocExport.e, all=T)
+toRename <- which(duplicated(tolower(varDocExport$Variable)))
+toRename <- unique(tolower(varDocExport$Variable)[toRename])
+renamed <- c()
+for(dvn in toRename){
+  ntoadd <- varDocExport$Variable[which(
+    tolower(varDocExport$Variable)==dvn
+  )]
+  toadd <- paste0(ntoadd, " (", 1:length(ntoadd), ")")
+  names(toadd) <- ntoadd
+  renamed <- c(renamed, toadd)
+}
+toadd <- setdiff(varDocExport$Variable, names(renamed))
+names(toadd) <- toadd
+renamed <- c(renamed, toadd)
+varDocExport$Variable[match(names(renamed), varDocExport$Variable)] <- renamed
+## Patient data
+patientData <- PPMI::patientData
+colnames(patientData) <- renamed[colnames(patientData)]
+visitData <- PPMI::visitData
+colnames(visitData) <- renamed[colnames(visitData)]
+```
+
+
+```{r, echo=FALSE, message=FALSE}
+## Final xlsx export
 varDocExport <- varDocExport[
     order(paste(varDocExport$Group, varDocExport$`Sub-group`, sep="-->")),
 ]
