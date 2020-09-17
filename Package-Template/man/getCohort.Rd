@@ -4,13 +4,13 @@
 \alias{getCohort}
 \title{Get patient IDs of a cohort}
 \usage{
-getCohort(cohort, enrolledOnly = TRUE)
+getCohort(cohort, enrolled_or_complete_only = TRUE)
 }
 \arguments{
 \item{cohort}{the name of the cohort to extract}
 
-\item{enrolledOnly}{if TRUE (default) only patients with an "Enrolled"
-status are returned}
+\item{enrolled_or_complete_only}{if TRUE (default) only patients
+with an "Enrolled" or a "Complete" status are returned}
 }
 \description{
 Get patient IDs of a cohort

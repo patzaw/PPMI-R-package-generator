@@ -1,6 +1,6 @@
 Package: PPMI
 Title: Package for dealing with PPMI provided data
-Version: 1.1.0
+Version: 1.2.0
 Author: Patrice Godard
 Maintainer: Patrice Godard <patrice.godard@gmail.com>
 Description: This package provides PPMI data and functions to work with.

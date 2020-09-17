@@ -333,11 +333,11 @@ The function `getCohort` is used to get PATNO (patient IDs) of a cohort of
 interest. The function `listCohorts` can be used to get all the available
 cohort. Cohorts are defined according to subject enrollment. However among
 enrolled subjects some have been withdrawn in the course of the study. These
-subjects can be excluded using the `enrolledOnly` parameter.
+subjects can be excluded using the `enrolled_or_complete_only` parameter.
 
 ```{r}
 listCohorts()
-pd <- getCohort(cohort="PD", enrolledOnly=TRUE)
+pd <- getCohort(cohort="PD", enrolled_or_complete_only=TRUE)
 head(pd)
 ```
 
