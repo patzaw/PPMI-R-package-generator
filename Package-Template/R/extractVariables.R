@@ -46,7 +46,9 @@ extractVariables <- function(
     
     ## Patient variables
     if(length(pVar) > 0){
-        pToRet <- PPMI::patientData[patients, pVar, drop=F]
+        pToRet <- PPMI::patientData[
+            match(patients, rownames(PPMI::patientData)), pVar, drop=F
+        ]
         rownames(pToRet) <- patients
     }else{
         pToRet <- data.frame(row.names=patients)

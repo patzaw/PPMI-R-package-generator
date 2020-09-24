@@ -170,9 +170,9 @@ smartBind <- function(a, b){
         )
     }
     rn <- union(rownames(a), rownames(b))
-    aToAdd <- a[rn,,drop=F]
+    aToAdd <- a[match(rn, rownames(a)),,drop=F]
     rownames(aToAdd) <- rn
-    bToAdd <- b[rn,,drop=F]
+    bToAdd <- b[match(rn, rownames(b)),,drop=F]
     rownames(bToAdd) <- rn
     return(cbind(aToAdd, bToAdd))
 }
