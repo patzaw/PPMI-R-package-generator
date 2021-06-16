@@ -58,48 +58,51 @@ recommended by the PPMI.
 
 The following files are parsed using the **D01-PPMI-Parsing.Rmd** script.
 
-    - Data_Dictionary.csv
-    - Code_List.csv
-    - Patient_Status.csv
+    - Benton_Judgment_of_Line_Orientation.csv
+    - Blood_Chemistry___Hematology.csv
     - Center-Subject_List.csv
-    - Screening___Demographics.csv
-    - Socio-Economics.csv
-    - Family_History__PD_.csv
+    - Clinical_Diagnosis_and_Management.csv
+    - Code_List.csv
+    - Cognitive_Categorization.csv
+    - Concomitant_Medications.csv
+    - Current_Biospecimen_Analysis_Results.csv
+    - Data_Dictionary.csv
     - DATScan_Analysis.csv
     - DaTscan_Imaging.csv
+    - Diagnostic_Features.csv
+    - Epworth_Sleepiness_Scale.csv
+    - Family_History__PD_.csv
+    - General_Neurological_Exam.csv
+    - General_Physical_Exam.csv
+    - Genetic_Testing_Results.csv
+    - Geriatric_Depression_Scale__Short_.csv
+    - Hopkins_Verbal_Learning_Test.csv
+    - Letter_-_Number_Sequencing__PD_.csv
     - Magnetic_Resonance_Imaging.csv
-    - MDS_UPDRS_Part_I.csv
     - MDS_UPDRS_Part_I__Patient_Questionnaire.csv
+    - MDS_UPDRS_Part_I.csv
     - MDS_UPDRS_Part_II__Patient_Questionnaire.csv
     - MDS_UPDRS_Part_III.csv
     - MDS_UPDRS_Part_IV.csv
     - Modified_Schwab_+_England_ADL.csv
-    - TAP-PD_Kinetics_Device_Testing.csv
-    - General_Physical_Exam.csv
-    - Clinical_Diagnosis_and_Management.csv
-    - Primary_Diagnosis.csv
-    - Diagnostic_Features.csv
-    - General_Neurological_Exam.csv
-    - Neurological_Exam_-_Cranial_Nerves.csv
-    - PD_Features.csv
-    - Use_of_PD_Medication.csv
-    - Vital_Signs.csv
-    - Benton_Judgment_of_Line_Orientation.csv
-    - Cognitive_Categorization.csv
-    - Epworth_Sleepiness_Scale.csv
-    - Geriatric_Depression_Scale__Short_.csv
-    - Hopkins_Verbal_Learning_Test.csv
-    - Letter_-_Number_Sequencing__PD_.csv
     - Montreal_Cognitive_Assessment__MoCA_.csv
+    - Neurological_Exam_-_Cranial_Nerves.csv
+    - Patient_Status.csv
+    - PD_Features.csv
+    - PPMI_PD_Variants_Genetic_Status_WGS_20180921.csv
+    - Primary_Diagnosis.csv
     - QUIP_Current_Short.csv
     - REM_Sleep_Disorder_Questionnaire.csv
     - SCOPA-AUT.csv
+    - Screening___Demographics.csv
     - Semantic_Fluency.csv
+    - Socio-Economics.csv
     - State-Trait_Anxiety_Inventory.csv
     - Symbol_Digit_Modalities.csv
+    - TAP-PD_Kinetics_Device_Testing.csv
     - University_of_Pennsylvania_Smell_ID_Test.csv
-    - Current_Biospecimen_Analysis_Results.csv
-    - Blood_Chemistry___Hematology.csv
+    - Use_of_PD_Medication.csv
+    - Vital_Signs.csv
 
 The following objects are created and saved in the **PPMI-Parsed.rda** file.
 

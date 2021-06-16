@@ -104,6 +104,7 @@ vEvent <- function(d){
 }
 ```
 
+
 <!-------------------------------------------------->
 <!-------------------------------------------------->
 
@@ -1411,6 +1412,70 @@ parDocToAdd <- data.frame(
     check.names=F
 )
 rownames(parDocToAdd) <- newVar
+varDoc <- rbind(varDoc, parDocToAdd)
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+# Concomitant medications
+
+```{r}
+colnames(cmed) <- sub("^EVENT_ID$", "RECORD_EVENT", colnames(cmed))
+cmed <- merge(cmed, visitInfo, by="PATNO", all=FALSE)
+cmed <- cmed[which(!is.na(cmed$INFODT)),]
+cmed <- cmed[which(
+   (is.na(cmed$STARTDT) | cmed$STARTDT < cmed$INFODT) &
+      (is.na(cmed$STOPDT) | cmed$STOPDT>= cmed$INFODT),
+),]
+agcmed <- do.call(rbind, by(
+   cmed,
+   paste(cmed$PATNO, cmed$EVENT_ID),
+   function(x){
+      return(data.frame(
+         x[1, c("PATNO", "EVENT_ID")],
+         # LEDD=ifelse(all(is.na(x$LEDD_num)), NA, sum(x$LEDD_num, na.rm=TRUE)),
+         "MED_WITH_LEDD"=sum(!is.na(x$LEDD_num)),
+         "NON_DIS_MED"=sum(x$DISMED==0),
+         "DIS_MED"=sum(x$DISMED!=0),
+         "NON_PD_MOTOR_MED"=sum(x$PD_MOTOR_MED==0),
+         "PD_MOTOR_MED"=sum(x$PD_MOTOR_MED!=0)
+         # "WITH_LDX"=any(x$LEDD_str=="LDx")
+      ))
+   }
+))
+rownames(agcmed) <- paste(agcmed$PATNO, agcmed$EVENT_ID, sep=".")
+agcmed <- agcmed[rownames(visitData),]
+rownames(agcmed) <- rownames(visitData)
+visitData <- cbind(
+  visitData,
+  agcmed[,setdiff(colnames(agcmed), c("PATNO", "EVENT_ID"))]
+)
+parDocToAdd <- data.frame(
+    Variable=c(
+      # "LEDD",
+      "MED_WITH_LEDD",
+      "NON_DIS_MED",
+      "DIS_MED",
+      "NON_PD_MOTOR_MED",
+      "PD_MOTOR_MED"
+    ),
+    Description=c(
+      # "Sum of L-dopa equivalent daily dose (LEDD)",
+      "Number of medications with a LEDD value",
+      "Number of non PD medications",
+      "Number of PD medications",
+      "Number of medications not affecting PD Motor assessments",
+      "Number of medications affecting PD Motor assessments"
+    ),
+    Group="Medical history",
+    "Sub-group"="PD medication",
+    Class="numeric",
+    Source="Derived",
+    stringsAsFactors=F,
+    check.names=F
+   )
+rownames(parDocToAdd) <- parDocToAdd$Variable
 varDoc <- rbind(varDoc, parDocToAdd)
 ```
 

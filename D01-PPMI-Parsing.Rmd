@@ -2354,7 +2354,8 @@ pdFeat <- pdFeat[
    ,
    setdiff(
       colnames(pdFeat),
-      c("SXMO", "SXYEAR", "PDDXEST")
+      # c("SXMO", "SXYEAR", "PDDXEST")
+      c("PDDXEST")
      )
 ]
 # Remove "comments" fields
@@ -3744,6 +3745,67 @@ dataList <- c(
         biology=c("biospec", "bdDoc", "blood", "bcDoc")
     )
 )
+```
+
+<!-------------------------------------------------->
+<!-------------------------------------------------->
+
+## Concomitant medications
+
+```{r, echo=FALSE, message=FALSE}
+f <- "Concomitant_Medications.csv"
+cmed <- readPpmiTable(f)
+# cmed <- cmed[
+#    ,
+#    c("PATNO", "STARTDT", "STOPDT", "LEDD", "DISMED", "PD_MOTOR_MED")
+# ]
+cmed$STARTDT <- as.Date(
+   paste("01/", cmed$STARTDT, sep=""),
+   "%d/%m/%Y"
+)
+cmed$STOPDT <- as.Date(
+   paste("01/", cmed$STOPDT, sep=""),
+   "%d/%m/%Y"
+)
+stopifnot(all(
+  is.na(cmed$LEDD) |
+  !is.na(as.numeric(cmed$LEDD)) |
+  cmed$LEDD %in% c("LD x 0.33", "LD x 0.5")
+))
+cmed$LEDD_str <- ifelse(cmed$LEDD %in% c("LD x 0.33", "LD x 0.5"), "LDx", "num")
+cmed$LEDD_num <- as.numeric(ifelse(
+  cmed$LEDD=="LD x 0.33", NA,
+  ifelse(
+    cmed$LEDD=="LD x 0.5", NA,
+    cmed$LEDD
+  )
+))
+takenFiles <- unique(c(takenFiles, f))
+```
+
+The following PD features have been taken from the *`r mdSan(f)`* file:
+
+```{r, echo=FALSE, message=FALSE}
+kable(paramDesc[
+    which(
+        paramDesc$ITM_NAME %in%
+            setdiff(colnames(cmed), c("PATNO", "EVENT_ID", "INFODT"))
+    ),
+], row.names=F)
+```
+
+Number of subjects with at least one concomitant medication:
+
+```{r, echo=FALSE, message=FALSE}
+toplot <- unique(merge(
+    cmed[,c("PATNO", "PD_MOTOR_MED")],
+    cohorts[,c("PATNO", "ENROLL_CAT")],
+    by="PATNO"
+))
+toplot$PD_MOTOR_MED <- ifelse(
+  toplot$PD_MOTOR_MED==0, "Under non motor med.", "Under motor med."
+)
+kable(table(toplot[,c("ENROLL_CAT", "PD_MOTOR_MED")]), rownames="Cohort")
 ```
 
 <!-------------------------------------------------->
@@ -5173,7 +5235,7 @@ visitInfo <- visitInfo[rownames(visitData),]
 toSave <- c(
     "dumpDate",
     "visitDoc", "visitInfo", "scheduledVisits",
-    "varDoc", "patientData", "visitData"
+    "varDoc", "patientData", "visitData", "cmed"
 )
 f <- "PPMI-Parsed.rda"
 save(list=toSave, file=f)
