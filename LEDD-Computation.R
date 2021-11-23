@@ -152,12 +152,54 @@ pdmed$ONOTHER[tocorrect] <- FALSE
 ##    should be set to PDMEDYN == YES and ONLDOPA == FALSE,
 ##    or ONDOPAG == FALSE, or ONOTHER == TRUE
 tocorrect <- which(
-   (is.na(pdmed$PDMEDYN) | pdmed$PDMEDYN=="No")
+   (is.na(pdmed$PDMEDYN) | pdmed$PDMEDYN=="No") &
+      !is.na(pdmed$LEDD)
 )
 pdmed$PDMEDYN[tocorrect] <- "Yes"
 pdmed$ONLDOPA[tocorrect] <- FALSE
 pdmed$ONDOPAG[tocorrect] <- FALSE
 pdmed$ONOTHER[tocorrect] <- TRUE
+
+### xii. For GENERIC = Safinamide, we noticed LEDD is incorrect by a factor
+## of 100; please, re-calculate LEDD by multiplying CMDOSE by CMDOSFRQ_NUM
+## (multiplication factor for Safinamide is 1 and 100 was used)
+tocorrect <- which(pdmed$GENERIC=="Safinamide")
+pdmed$LEDD_num[tocorrect] <- pdmed$CMDOSE[tocorrect] *
+   pdmed$CMDOSFRQ_NUM[tocorrect]
+
+### xiii. For CMTRT  = “Rytary”, LEDD needs to be replaced by actual value in
+## TOTDOSE for final calculations
+tocorrect <- which(pdmed$CMTRT=="RYTARY")
+pdmed$LEDD_num[tocorrect] <- pdmed$TOTDDOSE[tocorrect]
+
+### xiv. CMTRT “Carbi” + “Levo”, if c(23.75, 31.25, 36.25, 37.5, 48.75, 61.25)
+## in CMTRT
+## LEDD needs to be replaced by actual value in TOTDOSE for final calculations
+tocorrect <- grep(
+   paste0(
+      "(",
+       paste(
+         c(23.75, 31.25, 36.25, 37.5, 48.75, 61.25),
+         collapse=")|("
+      ),
+   ")"
+   ),
+   pdmed$CMTRT
+) %>% 
+   intersect(
+      grep("^carbidopa *[/-] *levodopa", pdmed$CMTRT, ignore.case=TRUE)
+   )
+pdmed$LEDD_num[tocorrect] <- pdmed$TOTDDOSE[tocorrect]
+
+### xv. Other errors
+tocorrect <- which(
+   pdmed$PATNO=="3960" & pdmed$EVENT_ID=="V14" & pdmed$CMTRT=="NEUPRO"
+)
+stopifnot(pdmed[tocorrect,"LEDD_num"]==12120)
+pdmed[tocorrect,"LEDD_num"] <- 121.20
+
+tocorrect <- which(pdmed$LEDD_num > 1500)
+pdmed$LEDD_num[tocorrect] <- pdmed$TOTDDOSE[tocorrect]
 
 ## 7. Clean up data with PDMEDYN == YES & LEDD == NA ----
 ### xii. Need to calculate LEDD by Patient / Visit (see below) ----
@@ -177,8 +219,8 @@ pdmed %>%
 # x <- pdmed %>% filter(PATNO=="3231" & EVENT_ID=="V04")
 
 carbTr <- c(
-   grep("Carbidopa", unique(pdmed$GENERIC), value=TRUE, ignore.case=TRUE),
-   "Entacapone"
+   grep("Entacapone", unique(pdmed$GENERIC), value=TRUE, ignore.case=TRUE),
+   "Opicapone"
 )
 agpdmed <- do.call(bind_rows, by(
    pdmed,
@@ -208,6 +250,17 @@ agpdmed <- do.call(bind_rows, by(
       return(toRet)
    }
 ))
+
+pdmed <- left_join(
+   pdmed,
+   select(patd, "PATNO", "ENROLL_CAT", "CNO", "GENDER", "ENROLL_DATE", "BIRTHDT"),
+   by="PATNO"
+)
+agpdmed <- left_join(
+   agpdmed,
+   select(patd, "PATNO", "ENROLL_CAT", "CNO", "GENDER", "ENROLL_DATE", "BIRTHDT"),
+   by="PATNO"
+)
 
 write_tsv(
    pdmed,
